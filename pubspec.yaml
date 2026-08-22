@@ -1,0 +1,62 @@
+name: markdown_viewer
+description: "A private, mobile-first reader for long technical Markdown documents. All content stays on the device."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.12.2
+
+# Versions are pinned exactly (no ^) per the approved plan: two of these packages
+# are stale upstream, and V1 should not silently drift onto an untested release.
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Markdown -> widget list, TOC extraction, syntax highlighting. Local only.
+  markdown_widget: 2.3.2+8
+
+  # Index-addressable scrolling: TOC jump, reading-position tracking and restore.
+  scrollable_positioned_list: 0.3.8
+
+  # Local store. IndexedDB on web, files on native. No network.
+  hive_ce: 2.19.3
+  hive_ce_flutter: 2.3.4
+
+  # Opens tapped links in a new tab. Hands the URL to the browser; makes no request itself.
+  url_launcher: 6.3.2
+
+  # Flutter's text-selection UI on iOS-like platforms references this icon font.
+  # Without it the build warns about a missing family and glyphs can render as
+  # tofu on iPhone. Tree-shaken to ~1.5 kB; no code of ours imports it.
+  cupertino_icons: 1.0.9
+
+  # Local file selection for "Load from file". Reads the picked file in the
+  # browser via FileReader; nothing is uploaded. It transitively brings in
+  # cross_file and package:http - http is used only by cross_file's blob
+  # fallback and issues no request of its own. See DEPLOY.md.
+  file_selector: 1.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+  # Fonts are bundled deliberately. Flutter Web/CanvasKit downloads Roboto and Noto
+  # fallbacks from fonts.gstatic.com at runtime when no font is registered, which
+  # would be a third-party request on every cold load. See DEPLOY.md.
+  fonts:
+    - family: Roboto
+      fonts:
+        - asset: fonts/Roboto-Regular.ttf
+          weight: 400
+        - asset: fonts/Roboto-Italic.ttf
+          weight: 400
+          style: italic
+        - asset: fonts/Roboto-Bold.ttf
+          weight: 700
+    - family: CascadiaMono
+      fonts:
+        - asset: fonts/CascadiaMono.ttf

@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <!-- Replaced by the value of the `--base-href` argument passed to `flutter build web`.
+       For GitHub Pages project sites this must be "/<repo-name>/" (leading and trailing slash). -->
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="description" content="A private reader for long technical Markdown documents. Content never leaves your device.">
+
+  <!-- CSP:BEGIN -->
+  <!--
+    Privacy enforcement, not decoration.
+
+    Flutter Web/CanvasKit will fetch Roboto and Noto fallback fonts from
+    fonts.gstatic.com at runtime, and the Markdown renderer would fetch any
+    remote image referenced by a pasted document. Fonts are bundled locally and
+    remote images are replaced with placeholders in Dart, but this policy makes
+    the guarantee enforceable by the browser rather than dependent on our code
+    being correct: every off-origin request is blocked outright.
+
+    - 'wasm-unsafe-eval' is required to instantiate the CanvasKit WebAssembly module.
+    - 'unsafe-inline' style is required; Flutter injects inline styles for the host element.
+    - blob: is required for the workers and object URLs the engine creates.
+    - A blocked font simply renders as a missing glyph. It never becomes a network call.
+
+    ====================================================================
+    THE POLICY BELOW IS THE DEVELOPMENT POLICY AND IS REPLACED AT BUILD TIME.
+    ====================================================================
+
+    `flutter run` compiles with DDC, which loads the app as ~750 module scripts
+    and then starts it with an INLINE <script>. Release compiles with dart2js to
+    a single external main.dart.js and needs no inline script at all. So debug
+    genuinely requires a weaker script-src than release; there is no single
+    policy that serves both.
+
+    Rather than weaken release, `tool/build_web.ps1` replaces everything between
+    the CSP:BEGIN / CSP:END markers with the strict release policy and then
+    asserts the result. Build with that script, not with a bare `flutter build
+    web`. See DEPLOY.md.
+
+    The development policy is deliberately still restrictive where it costs
+    nothing: default-src, font-src and img-src are identical to release, so an
+    accidental third-party font or image fetch is still caught while developing.
+    It differs from release in exactly two places:
+      - script-src adds 'unsafe-inline' 'unsafe-eval' blob:  (DDC's loader)
+      - connect-src adds localhost WebSockets                (hot reload / DWDS)
+    Neither relaxation permits an off-origin request.
+
+    connect-src also allows blob: in BOTH policies. "Load from file" reads the
+    picked file through cross_file, which re-hydrates the file from a blob: URL
+    the page created moments earlier; without this, reading the file fails with
+    "Connecting to 'blob:...' violates the following Content Security Policy
+    directive: connect-src 'self'". A blob: URL is same-document and page-created
+    and cannot address any other origin, so this permits no network egress - the
+    privacy model is unchanged.
+  -->
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'self';
+    script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob:;
+    style-src 'self' 'unsafe-inline';
+    font-src 'self';
+    img-src 'self' data: blob:;
+    media-src 'self' data: blob:;
+    connect-src 'self' blob: ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:*;
+    worker-src 'self' blob:;
+    child-src 'self' blob:;
+    object-src 'none';
+    base-uri 'self';
+    form-action 'none';
+  ">
+  <!-- CSP:END -->
+
+  <!-- iOS / home-screen -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Markdown Reader">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Matches the reader background so the Safari chrome does not clash while reading. -->
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#FBFAF7">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#15161A">
+
+  <link rel="icon" type="image/png" href="favicon.png"/>
+  <link rel="manifest" href="manifest.json">
+
+  <title>Markdown Reader</title>
+</head>
+<body>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>
