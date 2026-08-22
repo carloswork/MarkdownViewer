@@ -44,6 +44,15 @@ dev_dependencies:
 flutter:
   uses-material-design: true
 
+  # The home screen shows the mascot beside its title. This is a separate
+  # derived asset from the app/PWA icons: those keep an opaque #15161A plate,
+  # which is right for a launcher tile but makes the mascot look like an icon
+  # pasted onto the page. This one has a transparent background so it sits
+  # directly on the page in either theme. Bundled rather than fetched from web/,
+  # so it loads offline and needs no request.
+  assets:
+    - branding/pencil-bird.png
+
   # Fonts are bundled deliberately. Flutter Web/CanvasKit downloads Roboto and Noto
   # fallbacks from fonts.gstatic.com at runtime when no font is registered, which
   # would be a third-party request on every cold load. See DEPLOY.md.

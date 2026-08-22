@@ -61,13 +61,36 @@ class HomeScreen extends StatelessWidget {
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Text(
-                          'Markdown Reader',
-                          style: TextStyle(
-                            fontSize: 26,
-                            fontWeight: FontWeight.w700,
-                            color: palette.text,
-                          ),
+                        Row(
+                          children: [
+                            // The mascot, on a transparent background so it
+                            // sits directly on the page rather than inside a
+                            // tile. The app/PWA icons keep their opaque plate;
+                            // that is right for a launcher, wrong here.
+                            // Framed to the same 88% of its square canvas as
+                            // those icons, so this renders at exactly the size
+                            // and position already approved. Decorative: the
+                            // title beside it already carries the name, so it
+                            // stays out of the semantics tree.
+                            Image.asset(
+                              'branding/pencil-bird.png',
+                              width: 38,
+                              height: 38,
+                              filterQuality: FilterQuality.medium,
+                              excludeFromSemantics: true,
+                            ),
+                            const SizedBox(width: 12),
+                            Flexible(
+                              child: Text(
+                                'Markdown Viewer',
+                                style: TextStyle(
+                                  fontSize: 26,
+                                  fontWeight: FontWeight.w700,
+                                  color: palette.text,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 8),
                         Text(

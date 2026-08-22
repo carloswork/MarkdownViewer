@@ -1,6 +1,6 @@
 {
-    "name": "Markdown Reader",
-    "short_name": "MD Reader",
+    "name": "Markdown Viewer",
+    "short_name": "MD Viewer",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#15161A",

@@ -186,7 +186,7 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Markdown Reader',
+      title: 'Markdown Viewer',
       debugShowCheckedModeBanner: false,
       themeMode: switch (_settings.appearance) {
         AppearanceMode.system => ThemeMode.system,
