@@ -195,6 +195,28 @@ publish that output to GitHub.
 4. Leave the URL strategy alone. The app uses the default hash strategy because
    GitHub Pages cannot rewrite unknown paths to `index.html`.
 
+### Custom domain: `web/CNAME`
+
+`web/CNAME` is tracked deliberately. It holds the custom domain of this project's
+production site, `viewer.lookforsthgood.com`, and is **deployment-specific
+configuration rather than application code**.
+
+It works the same way `.nojekyll` does: the release build copies `web/CNAME` to
+`build/web/CNAME`, and publishing the contents of `build/web` puts it at the root
+of `gh-pages`. GitHub Pages reads it from there, so the custom domain survives
+every redeployment. Keeping it in `web/` is what makes that durable — a `CNAME`
+that exists only on `gh-pages` would be deleted the next time the branch is
+republished from `build/web`.
+
+**If you fork or clone this repository to deploy it yourself, do not keep this
+file as-is.** Replace the contents of `web/CNAME` with your own domain, or delete
+the file if you are not using a custom domain. Publishing someone else's domain
+in your own deployment will not work and should not be attempted.
+
+A site published without a custom domain needs no `CNAME` file at all; it is
+served from the default `<user>.github.io/<repo>/` URL, which also requires the
+matching `--base-href` (see the release-build flags above).
+
 ### Optional size trim before publishing
 
 `build/web/canvaskit` is ~37 MB on disk, but the browser only downloads
