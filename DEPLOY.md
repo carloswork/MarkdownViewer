@@ -74,7 +74,8 @@ markers in `build/web/index.html` with the strict policy, and asserts:
 
 - the strict `script-src` is present
 - `script-src` contains no `'unsafe-inline'` and no `'unsafe-eval'`
-- `connect-src` is `'self'` only, with no localhost entries
+- `connect-src` is `'self'` plus page-created `blob:`, with no localhost and
+  no remote `http(s)` / `ws(s)` origins
 - `font-src 'self'` survived
 - development-only notes were stripped
 - the base href was applied
@@ -180,11 +181,13 @@ looks like a broken app rather than a broken server.
 
 ## Publishing to GitHub Pages
 
-Not done yet — no remote is configured, by instruction.
+Publication is a release-process step, not a build step: `tool/build_web.ps1`
+produces `build/web` locally and needs no remote. The steps below are what
+publish that output to GitHub.
 
 1. Create the GitHub repository and add it as a remote.
-2. Publish the contents of `build/web` to the `gh-pages` branch (or `/docs` on
-   `main`).
+2. Publish the contents of `build/web` to the root of the orphan `gh-pages`
+   branch, so no generated output enters the `master` history.
 3. Confirm `.nojekyll` is present at the site root. It is committed in `web/` and
    is copied into `build/web` by the build, so it should be there automatically —
    but check. Without it, Jekyll strips Flutter's `_`-prefixed asset paths and the
