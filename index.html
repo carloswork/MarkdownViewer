@@ -1,0 +1,50 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+  <!-- Replaced by the value of the `--base-href` argument passed to `flutter build web`.
+       For GitHub Pages project sites this must be "/<repo-name>/" (leading and trailing slash). -->
+  <base href="/MarkdownViewer/">
+
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="description" content="A private reader for long technical Markdown documents. Content never leaves your device.">
+
+  <!-- CSP:BEGIN -->
+  <!-- Release policy, injected by tool/build_web.ps1. Every off-origin request is blocked. -->
+  <!-- connect-src allows blob: so "Load from file" can read the picked file from
+       the page's own blob URL. blob: is same-document and cannot address another
+       origin, so no network egress is permitted. -->
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'self';
+    script-src 'self' 'wasm-unsafe-eval';
+    style-src 'self' 'unsafe-inline';
+    font-src 'self';
+    img-src 'self' data: blob:;
+    media-src 'self' data: blob:;
+    connect-src 'self' blob:;
+    worker-src 'self' blob:;
+    child-src 'self' blob:;
+    object-src 'none';
+    base-uri 'self';
+    form-action 'none';
+  ">
+  <!-- CSP:END -->
+  <!-- iOS / home-screen -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Markdown Viewer">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Matches the reader background so the Safari chrome does not clash while reading. -->
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#FBFAF7">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#15161A">
+
+  <link rel="icon" type="image/png" href="favicon.png"/>
+  <link rel="manifest" href="manifest.json">
+
+  <title>Markdown Viewer</title>
+</head>
+<body>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>
