@@ -217,6 +217,24 @@ A site published without a custom domain needs no `CNAME` file at all; it is
 served from the default `<user>.github.io/<repo>/` URL, which also requires the
 matching `--base-href` (see the release-build flags above).
 
+### Social preview: `web/og-image.png` and the `og:`/`twitter:` tags
+
+`web/og-image.png` is the social-sharing preview image. It reaches the site the
+same way `CNAME` and `.nojekyll` do — the release build copies it from `web/` into
+`build/web/`, and publishing `build/web` puts it at the site root.
+
+The matching `og:`/`twitter:` tags in `web/index.html` are read **only by external
+crawlers** (Facebook, LinkedIn, X, Slack). The Viewer never requests the image, so
+no CSP directive is involved and the privacy model is unchanged.
+
+The Open Graph spec requires absolute URLs, so those tags hardcode this project's
+production origin, `https://viewer.lookforsthgood.com/`. **This carries the same
+caveat as `CNAME`: if you fork or clone this repository to deploy it yourself,
+update those absolute URLs to your own origin or remove the tags.** Left as-is,
+your deployment would advertise someone else's domain and image in every shared
+link. Deploy the image and the tags together — an `og:image` pointing at a 404 is
+worse than none, because crawlers cache the failure.
+
 ### Optional size trim before publishing
 
 `build/web/canvaskit` is ~37 MB on disk, but the browser only downloads
