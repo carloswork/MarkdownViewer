@@ -115,6 +115,22 @@ double readerHorizontalPadding(double viewportWidth) {
 const String kBodyFont = 'Roboto';
 const String kCodeFont = 'CascadiaMono';
 
+/// Emoji fallback family (DF-023).
+///
+/// Roboto and Cascadia Mono cover no emoji code points, so CanvasKit tried to
+/// download Noto Color Emoji from fonts.gstatic.com and the strict font-src
+/// policy blocked it, leaving missing-glyph boxes. This family is bundled
+/// locally and is **fallback only**: it is never a primary [TextStyle.fontFamily]
+/// and is always the last entry in a fallback list, so it can only ever supply a
+/// glyph the primary family does not have.
+const String kEmojiFont = 'TwemojiMozilla';
+
+/// Fallback chain for proportional text. Roboto stays primary.
+const List<String> kBodyFontFallback = <String>[kEmojiFont];
+
+/// Fallback chain for user-authored code text. Cascadia Mono stays primary.
+const List<String> kCodeFontFallback = <String>[kEmojiFont];
+
 ThemeData buildAppTheme(ReaderPalette palette) {
   final scheme = ColorScheme.fromSeed(
     seedColor: palette.link,
@@ -125,6 +141,7 @@ ThemeData buildAppTheme(ReaderPalette palette) {
   return ThemeData(
     useMaterial3: true,
     fontFamily: kBodyFont,
+    fontFamilyFallback: kBodyFontFallback,
     brightness: palette.isDark ? Brightness.dark : Brightness.light,
     colorScheme: scheme,
     scaffoldBackgroundColor: palette.background,
@@ -162,6 +179,7 @@ MarkdownConfig buildMarkdownConfig({
     fontSize: kBodyFontSize,
     height: kBodyLineHeight,
     color: palette.text,
+    fontFamilyFallback: kBodyFontFallback,
   );
 
   HeadingDivider divider() => HeadingDivider(color: palette.rule, height: 1);
@@ -175,6 +193,7 @@ MarkdownConfig buildMarkdownConfig({
           height: 1.25,
           fontWeight: FontWeight.w700,
           color: palette.text,
+          fontFamilyFallback: kBodyFontFallback,
         ),
         padding: const EdgeInsets.only(top: 24, bottom: 6),
         divider: divider(),
@@ -186,6 +205,7 @@ MarkdownConfig buildMarkdownConfig({
           height: 1.3,
           fontWeight: FontWeight.w700,
           color: palette.text,
+          fontFamilyFallback: kBodyFontFallback,
         ),
         padding: const EdgeInsets.only(top: 22, bottom: 4),
         divider: divider(),
@@ -197,6 +217,7 @@ MarkdownConfig buildMarkdownConfig({
           height: 1.35,
           fontWeight: FontWeight.w700,
           color: palette.text,
+          fontFamilyFallback: kBodyFontFallback,
         ),
         padding: const EdgeInsets.only(top: 18, bottom: 2),
       ),
@@ -207,6 +228,7 @@ MarkdownConfig buildMarkdownConfig({
           height: 1.4,
           fontWeight: FontWeight.w700,
           color: palette.text,
+          fontFamilyFallback: kBodyFontFallback,
         ),
         padding: const EdgeInsets.only(top: 14, bottom: 2),
       ),
@@ -217,6 +239,7 @@ MarkdownConfig buildMarkdownConfig({
           height: 1.4,
           fontWeight: FontWeight.w700,
           color: palette.muted,
+          fontFamilyFallback: kBodyFontFallback,
         ),
         padding: const EdgeInsets.only(top: 12, bottom: 2),
       ),
@@ -227,6 +250,7 @@ MarkdownConfig buildMarkdownConfig({
           height: 1.4,
           fontWeight: FontWeight.w700,
           color: palette.muted,
+          fontFamilyFallback: kBodyFontFallback,
         ),
         padding: const EdgeInsets.only(top: 10, bottom: 2),
       ),
@@ -238,6 +262,7 @@ MarkdownConfig buildMarkdownConfig({
           color: palette.link,
           decoration: TextDecoration.underline,
           decorationColor: palette.link.withValues(alpha: 0.5),
+          fontFamilyFallback: kBodyFontFallback,
         ),
         onTap: onLinkTap,
       ),
@@ -251,6 +276,7 @@ MarkdownConfig buildMarkdownConfig({
               ? const Color(0xFFE6C07B)
               : const Color(0xFFB3261E),
           backgroundColor: palette.codeBackground,
+          fontFamilyFallback: kCodeFontFallback,
         ),
       ),
       // Fenced code. `builder` replaces the package's block entirely so that
@@ -281,11 +307,13 @@ MarkdownConfig buildMarkdownConfig({
           height: 1.35,
           fontWeight: FontWeight.w700,
           color: palette.text,
+          fontFamilyFallback: kBodyFontFallback,
         ),
         bodyStyle: TextStyle(
           fontSize: kBodyFontSize - 2,
           height: 1.35,
           color: palette.text,
+          fontFamilyFallback: kBodyFontFallback,
         ),
         headPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
         bodyPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),

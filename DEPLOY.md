@@ -257,8 +257,9 @@ Do not delete the `.wasm` variants — the runtime picker chooses among them.
    grep -ro --binary-files=text -E "https?://[a-zA-Z0-9.-]+" build/web | grep -v localhost | sort -u
    ```
 2. Load the app with the browser Network panel open. Every request must target
-   the origin serving the app. Confirm the four bundled fonts
-   (`Roboto-Regular/Italic/Bold`, `CascadiaMono`) load from `assets/fonts/`.
+   the origin serving the app. Confirm the five bundled fonts
+   (`Roboto-Regular/Italic/Bold`, `CascadiaMono`, `TwemojiMozilla`) load from
+   `assets/fonts/`.
 3. Paste a document containing `![x](https://example.test/a.png)` and confirm a
    placeholder appears and **no** request is made.
 
@@ -294,10 +295,20 @@ flutter clean && flutter pub get && ./tool/build_web.ps1
 
 - `main.dart.js` still contains the string `https://fonts.gstatic.com/s/`. That is
   the engine's Noto fallback downloader, used only for code points no registered
-  font covers. Bundling Roboto and Cascadia Mono avoids it for Latin text and
-  code; the CSP blocks it outright in every case. Unusual glyphs (some emoji,
-  CJK) will render as a missing-glyph box rather than being fetched. This is the
-  intended trade.
+  font covers. It is never allowed to run: the CSP blocks the fetch, and the
+  observed violation names `connect-src`, because CanvasKit downloads font bytes
+  through the Fetch API rather than through CSS font loading. Both `font-src` and
+  `connect-src` are `'self'`, and neither is relaxed. The policy is doing its job
+  here — this is the intended boundary, not a defect in it.
+- Bundling fonts locally is what keeps that downloader unnecessary. Roboto and
+  Cascadia Mono cover Latin text and code; `TwemojiMozilla` is registered as a
+  fallback-only family so emoji resolve locally too. With the network disabled
+  after a first load, the bundled repertoire still renders and no font request is
+  attempted.
+- **Residual limitation.** The trade has narrowed, not disappeared. Characters
+  outside all five bundled fonts — CJK being the obvious case, along with emoji
+  added to Unicode after the bundled font's release — still render as a
+  missing-glyph box rather than being fetched. That remains the intended trade.
 - Flutter's Wasm/skwasm renderer cannot run on any iOS browser, so iPhone Safari
   uses the CanvasKit JS renderer. Nothing to configure; just don't expect the
   `--wasm` build to help there.

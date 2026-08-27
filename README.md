@@ -45,7 +45,9 @@ Supporting details, all verifiable in the source:
 - Links are handed to the browser to open in a new tab; the app makes no request
   itself. Only `http`, `https` and `mailto` links are accepted.
 - Fonts are bundled with the application rather than loaded from a font CDN, so
-  a cold load makes no third-party request.
+  a cold load makes no third-party request. That includes emoji: an emoji-capable
+  font is bundled and used as a fallback, so emoji in a document render from local
+  files instead of being fetched at runtime.
 - A Content-Security-Policy backs all of this at the browser level. Release
   builds carry a strict policy limiting `connect-src` to `'self'` and
   page-created `blob:` URLs, which cannot address another origin. See
@@ -94,4 +96,20 @@ mature tool.
 Licensed under the MIT License. See [LICENSE](LICENSE).
 
 Bundled third-party fonts keep their own licences: see
-`fonts/Roboto-LICENSE.txt` and `fonts/CascadiaMono-LICENSE.txt`.
+`fonts/Roboto-LICENSE.txt`, `fonts/CascadiaMono-LICENSE.txt` and
+`fonts/TwemojiMozilla-LICENSE.txt`.
+
+### Emoji font attribution
+
+The bundled emoji font is **Twemoji Mozilla**, redistributed unmodified.
+
+- Emoji artwork: [Twemoji](https://github.com/jdecked/twemoji), originally created
+  by Twitter, licensed under
+  [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+- Colour font build: [twemoji-colr](https://github.com/mozilla/twemoji-colr) by the
+  Mozilla Foundation, licensed under
+  [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0).
+- No changes were made: the font file is redistributed exactly as published.
+
+Roboto and Cascadia Mono remain the primary text and code families; the emoji font
+is only ever consulted as a fallback for characters they do not cover.

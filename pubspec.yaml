@@ -56,6 +56,11 @@ flutter:
   # Fonts are bundled deliberately. Flutter Web/CanvasKit downloads Roboto and Noto
   # fallbacks from fonts.gstatic.com at runtime when no font is registered, which
   # would be a third-party request on every cold load. See DEPLOY.md.
+  #
+  # The same reasoning extends to emoji. Roboto and Cascadia Mono cover no emoji
+  # code points, so CanvasKit tried to fetch Noto Color Emoji from that same
+  # third-party origin and the strict font-src policy blocked it, leaving tofu.
+  # TwemojiMozilla is bundled as a fallback-only family so emoji resolve locally.
   fonts:
     - family: Roboto
       fonts:
@@ -69,3 +74,6 @@ flutter:
     - family: CascadiaMono
       fonts:
         - asset: fonts/CascadiaMono.ttf
+    - family: TwemojiMozilla
+      fonts:
+        - asset: fonts/TwemojiMozilla.ttf

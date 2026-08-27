@@ -37,6 +37,7 @@ class CodeBlock extends StatelessWidget {
       fontSize: kBodyFontSize - 3,
       height: 1.45,
       color: palette.text,
+      fontFamilyFallback: kCodeFontFallback,
     );
 
     final text = _buildCodeText(trimmed, baseStyle);
