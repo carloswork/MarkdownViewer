@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.0.1 — 2026-08-27
 
 - Emoji and common symbols in Markdown now render in colour using a bundled local fallback font.
 - Some unsupported characters may still show missing glyphs, including CJK text and emoji newer than the bundled font.
