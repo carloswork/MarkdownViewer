@@ -262,6 +262,22 @@ Do not delete the `.wasm` variants — the runtime picker chooses among them.
    `assets/fonts/`.
 3. Paste a document containing `![x](https://example.test/a.png)` and confirm a
    placeholder appears and **no** request is made.
+4. Paste a document containing an arrow (`→`) and a check mark (`✅`) and
+   confirm both render as glyphs, with no font download attempted for either.
+
+Two different things are being checked here, and they have different scopes:
+
+- **No third-party transfer, for any input at all.** No off-origin request may
+  reach the network and no third-party font may load, whatever the document
+  contains. This one is unconditional. If it ever fails, stop and treat it as a
+  privacy defect.
+- **No font-download attempts for the characters the reader supports.** For Latin
+  text, the common symbol range and the bundled emoji repertoire there should be
+  no `Failed to load font` message at all.
+
+A document holding characters outside the bundled repertoire is the expected
+exception to the second point, and never to the first. See the runtime notes
+below before treating that case as a fault.
 
 The Content-Security-Policy is the backstop: it blocks every off-origin request at
 the browser level, so a mistake in application code degrades to a missing glyph
@@ -302,13 +318,31 @@ flutter clean && flutter pub get && ./tool/build_web.ps1
   here — this is the intended boundary, not a defect in it.
 - Bundling fonts locally is what keeps that downloader unnecessary. Roboto and
   Cascadia Mono cover Latin text and code; `TwemojiMozilla` is registered as a
-  fallback-only family so emoji resolve locally too. With the network disabled
-  after a first load, the bundled repertoire still renders and no font request is
-  attempted.
-- **Residual limitation.** The trade has narrowed, not disappeared. Characters
-  outside all five bundled fonts — CJK being the obvious case, along with emoji
-  added to Unicode after the bundled font's release — still render as a
-  missing-glyph box rather than being fetched. That remains the intended trade.
+  fallback-only family so emoji resolve locally too, and Cascadia Mono is also a
+  fallback for body text, which is what makes arrows and similar symbols resolve
+  locally in prose. With the network disabled after a first load, the bundled
+  repertoire still renders and no font request is attempted.
+- **Residual limitation — expected and bounded, not a deployment failure.** The
+  trade has narrowed, not disappeared. Characters outside all five bundled fonts
+  — CJK and Hangul being the obvious cases, along with emoji added to Unicode
+  after the bundled emoji font's release — still render as a missing-glyph box
+  rather than being fetched.
+
+  While such a character is on screen, the engine keeps retrying a blocked font
+  download. Expect a steady stream of `Failed to load font` console messages,
+  roughly 37 attempts a second for each candidate font family the engine walks
+  through, and a small constant amount of background CPU use. It stops when that
+  text scrolls off or the document is closed.
+
+  **Treat this as expected behaviour in the current release, not as a broken
+  deployment and not as a regression.** Every one of those attempts is blocked
+  before it reaches the network, so nothing is transferred and the privacy
+  boundary holds throughout — which is the criterion that actually matters here.
+  Do not try to silence the console noise by relaxing the
+  Content-Security-Policy, and do not redirect the engine's font downloader to
+  another location: both were measured and rejected. Relaxing the policy breaks
+  the privacy boundary outright, and redirecting the downloader merely moves the
+  requests while leaving the retry loop running at the same rate.
 - Flutter's Wasm/skwasm renderer cannot run on any iOS browser, so iPhone Safari
   uses the CanvasKit JS renderer. Nothing to configure; just don't expect the
   `--wasm` build to help there.

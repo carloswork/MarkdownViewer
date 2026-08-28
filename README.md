@@ -45,13 +45,43 @@ Supporting details, all verifiable in the source:
 - Links are handed to the browser to open in a new tab; the app makes no request
   itself. Only `http`, `https` and `mailto` links are accepted.
 - Fonts are bundled with the application rather than loaded from a font CDN, so
-  a cold load makes no third-party request. That includes emoji: an emoji-capable
-  font is bundled and used as a fallback, so emoji in a document render from local
-  files instead of being fetched at runtime.
+  a cold load makes no third-party request. That includes emoji and common
+  typographic symbols: an emoji-capable font and the bundled code font are both
+  used as fallbacks, so arrows, check marks, box-drawing characters and emoji
+  render from local files instead of being fetched at runtime.
 - A Content-Security-Policy backs all of this at the browser level. Release
   builds carry a strict policy limiting `connect-src` to `'self'` and
   page-created `blob:` URLs, which cannot address another origin. See
   [DEPLOY.md](DEPLOY.md).
+
+## Character coverage
+
+The bundled fonts cover Latin text, the common typographic and technical symbol
+range — arrows, box drawing, geometric shapes, and accented or extended Latin
+letters — and the emoji repertoire of the bundled emoji font. Characters in that
+range render from local files, with no font request of any kind.
+
+Coverage is deliberately not universal, and the reader does not claim otherwise.
+Scripts outside that range are **not** covered today; CJK and Hangul are the
+clearest cases, along with emoji added to Unicode after the bundled emoji font
+was published.
+
+When a document contains a character no bundled font covers:
+
+- It renders as a missing-glyph box — an empty rectangle, often called *tofu* —
+  in place, and the rest of the document is unaffected.
+- **The character itself is never altered.** It is not substituted,
+  transliterated, stripped or rewritten. Selecting and copying the text returns
+  the original character exactly as it was written.
+- The rendering engine repeatedly tries to download a font for it, and every one
+  of those attempts is blocked before it reaches the network. Nothing is
+  transferred. While such a character is on screen the attempts keep repeating,
+  which shows up as recurring messages in the browser console and a small amount
+  of background CPU use, and they stop when that text leaves the screen.
+
+That last point is a known limitation of the current release rather than
+something already solved. It does not weaken the privacy boundary: no request
+reaches the network in any case.
 
 ## Running locally
 
@@ -111,5 +141,6 @@ The bundled emoji font is **Twemoji Mozilla**, redistributed unmodified.
   [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0).
 - No changes were made: the font file is redistributed exactly as published.
 
-Roboto and Cascadia Mono remain the primary text and code families; the emoji font
-is only ever consulted as a fallback for characters they do not cover.
+Roboto remains the primary text family and Cascadia Mono the primary code family.
+The emoji font is only ever consulted as a fallback, and Cascadia Mono serves as a
+further fallback for symbols in body text. Neither ever replaces a primary family.
