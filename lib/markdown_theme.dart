@@ -120,13 +120,26 @@ const String kCodeFont = 'CascadiaMono';
 /// Roboto and Cascadia Mono cover no emoji code points, so CanvasKit tried to
 /// download Noto Color Emoji from fonts.gstatic.com and the strict font-src
 /// policy blocked it, leaving missing-glyph boxes. This family is bundled
-/// locally and is **fallback only**: it is never a primary [TextStyle.fontFamily]
-/// and is always the last entry in a fallback list, so it can only ever supply a
-/// glyph the primary family does not have.
+/// locally and is **fallback only**: it is never a primary [TextStyle.fontFamily],
+/// so it can only ever supply a glyph the primary family does not have.
+///
+/// **Ordering rule.** In a proportional chain it is *not* last - [kCodeFont]
+/// follows it (DF-024). It must stay **strictly ahead of** [kCodeFont] there:
+/// 19 code points are covered by both this family and Cascadia Mono and by no
+/// Roboto face, so the reverse order would silently turn 19 colour emoji into
+/// monochrome symbols. Whichever family comes first supplies the glyph, so this
+/// one goes first and cannot be pre-empted. In the code chain it stays last,
+/// because Cascadia Mono is already the primary family there.
 const String kEmojiFont = 'TwemojiMozilla';
 
 /// Fallback chain for proportional text. Roboto stays primary.
-const List<String> kBodyFontFallback = <String>[kEmojiFont];
+///
+/// Cascadia Mono is bundled anyway and covers the arrow, box-drawing and
+/// geometric symbol class that Roboto does not, so appending it costs zero
+/// bytes and stops those code points from driving the blocked font-download
+/// loop (DF-024). It is a fallback only, never a primary proportional family,
+/// and it must stay after [kEmojiFont] - see the ordering rule above.
+const List<String> kBodyFontFallback = <String>[kEmojiFont, kCodeFont];
 
 /// Fallback chain for user-authored code text. Cascadia Mono stays primary.
 const List<String> kCodeFontFallback = <String>[kEmojiFont];

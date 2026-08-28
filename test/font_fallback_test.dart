@@ -10,11 +10,16 @@ import 'package:markdown_widget/markdown_widget.dart';
 
 /// DF-023: the emoji family is bundled locally and wired in as a *fallback*.
 ///
+/// DF-024: Cascadia Mono is appended to the *proportional* fallback chain,
+/// strictly after the emoji family, so the already-bundled symbol repertoire
+/// covers arrows and geometric symbols in prose at zero added font bytes.
+///
 /// These tests prove the wiring — that the emoji family is registered, that it
-/// never displaces a primary family, and that it is always last. They do not
-/// prove rendering or packaging: rendering is verified in a real release build
-/// and packaging by `FontManifest.json`, because `flutter test` runs on the host
-/// with a test font and cannot reproduce CanvasKit font resolution.
+/// never displaces a primary family, and that it stays strictly ahead of
+/// Cascadia Mono in every proportional chain. They do not prove rendering or
+/// packaging: rendering is verified in a real release build and packaging by
+/// `FontManifest.json`, because `flutter test` runs on the host with a test
+/// font and cannot reproduce CanvasKit font resolution.
 
 /// The repo-relative path the code and `pubspec.yaml` both name.
 const String kEmojiFontAssetPath = 'fonts/TwemojiMozilla.ttf';
@@ -23,6 +28,24 @@ const String kRobotoRegularPath = 'fonts/Roboto-Regular.ttf';
 const String kRobotoItalicPath = 'fonts/Roboto-Italic.ttf';
 const String kRobotoBoldPath = 'fonts/Roboto-Bold.ttf';
 const String kCascadiaMonoPath = 'fonts/CascadiaMono.ttf';
+
+/// DF-024 ordering-risk set: the 19 code points covered by **both**
+/// TwemojiMozilla and Cascadia Mono, and by **neither** Roboto face.
+///
+/// Appending Cascadia Mono to the proportional chain puts these 19 in reach of
+/// two fallback families at once. Whichever family comes first supplies the
+/// glyph, so the ordering rule - emoji family strictly before the code family
+/// - is the only thing keeping them rendering in colour from Twemoji rather
+/// than as monochrome symbols from Cascadia Mono. Reordering the chain would
+/// silently regress all 19.
+///
+/// This pins the *list and the ordering rule*. The *rendering* is verified in
+/// a real release build; neither check substitutes for the other.
+const List<int> kOrderingRiskCodePoints = <int>[
+  0x2194, 0x2195, 0x25AA, 0x25AB, 0x25B6, 0x25C0, 0x25FB, 0x25FC, 0x25FD,
+  0x25FE, 0x263A, 0x2640, 0x2642, 0x2660, 0x2663, 0x2665, 0x2666, 0x2B1B,
+  0x2B1C,
+];
 
 MarkdownConfig _configFor(ReaderPalette palette) => buildMarkdownConfig(
   palette: palette,
@@ -102,7 +125,12 @@ void main() {
 
         expect(body.fontFamily, kBodyFont);
         expect(body.fontFamilyFallback, contains(kEmojiFont));
-        expect(body.fontFamilyFallback!.last, kEmojiFont);
+        expect(body.fontFamilyFallback, contains(kCodeFont));
+        expect(
+          body.fontFamilyFallback!.indexOf(kEmojiFont),
+          lessThan(body.fontFamilyFallback!.indexOf(kCodeFont)),
+          reason: 'the emoji family must stay strictly ahead of the code family',
+        );
       });
 
       test('$name: proportional Markdown styles keep Roboto and add the fallback', () {
@@ -178,22 +206,57 @@ void main() {
   });
 
   // ---------------------------------------------------------------------------
-  // 3. Ordering: the emoji family is always last, and appears once.
+  // 3. Ordering (C4).
+  //
+  //    DF-024 makes "the emoji family is last" deliberately untrue for
+  //    *proportional* chains, where Cascadia Mono now follows it. The tail
+  //    assertion is therefore replaced - not dropped - by a strictly stronger
+  //    invariant: both families present, exactly once each, emoji strictly
+  //    first. Code chains are asserted separately and still end with the emoji
+  //    family, because kCodeFontFallback is unchanged.
   // ---------------------------------------------------------------------------
-  group('emoji family is last in every fallback list', () {
-    test('the declared fallback constants end with the emoji family', () {
-      expect(kBodyFontFallback.last, kEmojiFont);
+  group('fallback ordering', () {
+    void expectProportionalOrdering(String label, List<String>? list) {
+      expect(list, isNotNull, reason: '$label has no fallback list');
+      expect(
+        list!.where((f) => f == kEmojiFont).length,
+        1,
+        reason: '$label must list the emoji family exactly once',
+      );
+      expect(
+        list.where((f) => f == kCodeFont).length,
+        1,
+        reason: '$label must list the code family exactly once',
+      );
+      expect(
+        list.indexOf(kEmojiFont),
+        lessThan(list.indexOf(kCodeFont)),
+        reason:
+            '$label must keep the emoji family strictly ahead of the code '
+            'family, or the ordering-risk code points regress to monochrome',
+      );
+    }
+
+    test('the proportional fallback constant puts the emoji family first', () {
+      expectProportionalOrdering('kBodyFontFallback', kBodyFontFallback);
+    });
+
+    test('the code fallback constant is unchanged and still ends with the emoji family', () {
+      expect(
+        kCodeFontFallback,
+        <String>[kEmojiFont],
+        reason:
+            'kCodeFontFallback is deliberately untouched: Cascadia Mono is '
+            'already the primary family in every code style',
+      );
       expect(kCodeFontFallback.last, kEmojiFont);
-      expect(kBodyFontFallback.where((f) => f == kEmojiFont).length, 1);
       expect(kCodeFontFallback.where((f) => f == kEmojiFont).length, 1);
     });
 
     for (final palette in _palettes) {
       final name = _paletteName(palette);
 
-      testWidgets('$name: every applicable fallback list ends with the emoji family', (
-        tester,
-      ) async {
+      test('$name: every proportional fallback list keeps the emoji family first', () {
         final theme = buildAppTheme(palette);
         final config = _configFor(palette);
 
@@ -202,6 +265,18 @@ void main() {
           ..._proportionalStyles(config).map(
             (label, style) => MapEntry(label, style.fontFamilyFallback),
           ),
+        };
+
+        expect(lists.length, greaterThan(1));
+        lists.forEach(expectProportionalOrdering);
+      });
+
+      testWidgets('$name: both code fallback lists still end with the emoji family', (
+        tester,
+      ) async {
+        final config = _configFor(palette);
+
+        final lists = <String, List<String>?>{
           ..._inlineCodeStyle(config).map(
             (label, style) => MapEntry(label, style.fontFamilyFallback),
           ),
@@ -212,9 +287,14 @@ void main() {
         lists.forEach((label, list) {
           expect(list, isNotNull, reason: '$label has no fallback list');
           expect(
+            list,
+            kCodeFontFallback,
+            reason: '$label must use the unchanged code fallback chain',
+          );
+          expect(
             list!.last,
             kEmojiFont,
-            reason: '$label must end with the emoji family so it cannot pre-empt a primary',
+            reason: '$label must end with the emoji family',
           );
           expect(
             list.where((f) => f == kEmojiFont).length,
@@ -224,6 +304,107 @@ void main() {
         });
       });
     }
+  });
+
+  // ---------------------------------------------------------------------------
+  // 3b. Primacy (C3). Neither fallback family may become a primary family where
+  //     it would displace the intended one.
+  // ---------------------------------------------------------------------------
+  group('primary families are preserved', () {
+    for (final palette in _palettes) {
+      final name = _paletteName(palette);
+
+      testWidgets('$name: fallback families never take over a primary slot', (
+        tester,
+      ) async {
+        final theme = buildAppTheme(palette);
+        final config = _configFor(palette);
+
+        final proportionalPrimaries = <String, String?>{
+          'theme.bodyMedium': theme.textTheme.bodyMedium?.fontFamily,
+          'theme.titleLarge': theme.textTheme.titleLarge?.fontFamily,
+          ..._proportionalStyles(
+            config,
+          ).map((label, style) => MapEntry(label, style.fontFamily)),
+        };
+
+        proportionalPrimaries.forEach((label, primary) {
+          expect(
+            primary,
+            isNot(kEmojiFont),
+            reason: '$label must never make the emoji family primary',
+          );
+          expect(
+            primary,
+            isNot(kCodeFont),
+            reason:
+                '$label is proportional prose: the code family is a fallback '
+                'there, never a primary family',
+          );
+          expect(
+            primary,
+            anyOf(isNull, equals(kBodyFont)),
+            reason: '$label must keep Roboto primary, explicitly or inherited',
+          );
+        });
+
+        final codePrimaries = <String, String?>{
+          ..._inlineCodeStyle(
+            config,
+          ).map((label, style) => MapEntry(label, style.fontFamily)),
+          'code (fenced)': (await _fencedCodeBaseStyle(tester, palette))
+              .fontFamily,
+        };
+
+        codePrimaries.forEach((label, primary) {
+          expect(
+            primary,
+            kCodeFont,
+            reason: '$label must keep Cascadia Mono primary',
+          );
+        });
+      });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // 3c. Ordering-risk data lock. Pins the 19 code points and the rule that
+  //     protects them. See kOrderingRiskCodePoints for why they matter.
+  // ---------------------------------------------------------------------------
+  group('ordering-risk data lock', () {
+    test('the 19 ordering-risk code points are pinned exactly', () {
+      expect(
+        kOrderingRiskCodePoints.length,
+        19,
+        reason: 'the ordering-risk set is exhaustive by construction',
+      );
+      expect(
+        kOrderingRiskCodePoints.toSet().length,
+        kOrderingRiskCodePoints.length,
+        reason: 'the set must contain no duplicates',
+      );
+      // A second, textual representation of the same data, so that editing any
+      // single code point fails this test rather than passing silently.
+      expect(
+        kOrderingRiskCodePoints
+            .map((c) => c.toRadixString(16).toUpperCase().padLeft(4, '0'))
+            .join(' '),
+        '2194 2195 25AA 25AB 25B6 25C0 25FB 25FC 25FD 25FE 263A 2640 2642 '
+        '2660 2663 2665 2666 2B1B 2B1C',
+      );
+    });
+
+    test('the rule that protects the ordering-risk set holds', () {
+      // These 19 are reachable from two fallback families at once. The first
+      // family in the chain wins, so this ordering is what keeps them coming
+      // from Twemoji rather than from Cascadia Mono.
+      expect(kBodyFontFallback, contains(kEmojiFont));
+      expect(kBodyFontFallback, contains(kCodeFont));
+      expect(
+        kBodyFontFallback.indexOf(kEmojiFont),
+        lessThan(kBodyFontFallback.indexOf(kCodeFont)),
+      );
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -250,6 +431,37 @@ void main() {
       ]) {
         expect(File(path).existsSync(), isTrue, reason: '$path must still exist');
       }
+    });
+
+    test('no new font binary is introduced', () {
+      // DF-024 is a zero-added-font-bytes change: it reuses a font that is
+      // already bundled rather than acquiring one. The test suite is one of the
+      // places that guardrail is enforced, so no new font path is added above
+      // and none may appear on disk.
+      const declaredFontAssets = <String>[
+        kRobotoRegularPath,
+        kRobotoItalicPath,
+        kRobotoBoldPath,
+        kCascadiaMonoPath,
+        kEmojiFontAssetPath,
+      ];
+      expect(declaredFontAssets.toSet().length, 5);
+
+      final onDisk = Directory('fonts')
+          .listSync()
+          .whereType<File>()
+          .map((entry) => entry.uri.pathSegments.last)
+          .where((name) => name.toLowerCase().endsWith('.ttf'))
+          .map((name) => 'fonts/$name')
+          .toSet();
+
+      expect(
+        onDisk,
+        declaredFontAssets.toSet(),
+        reason:
+            'fonts/ must hold exactly the font binaries already bundled at the '
+            'baseline - DF-024 adds, removes, subsets and regenerates nothing',
+      );
     });
 
     test('the emoji licence/notice file is bundled alongside the font', () {
