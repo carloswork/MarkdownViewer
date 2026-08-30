@@ -65,6 +65,7 @@ class _ReaderScreenState extends State<ReaderScreen>
   Timer? _saveDebounce;
 
   bool _controlsVisible = true;
+  late PrintSurfaceLease _printSurfaceLease;
 
   @override
   void initState() {
@@ -72,7 +73,7 @@ class _ReaderScreenState extends State<ReaderScreen>
     WidgetsBinding.instance.addObserver(this);
     _restore = store.loadPosition(widget.document.id);
     _positionsListener.itemPositions.addListener(_onPositionsChanged);
-    mountPrintSurface(widget.document.source);
+    _printSurfaceLease = mountPrintSurface(widget.document.source);
   }
 
   @override
@@ -86,11 +87,17 @@ class _ReaderScreenState extends State<ReaderScreen>
   @override
   void didUpdateWidget(covariant ReaderScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.document.id != widget.document.id ||
+        oldWidget.document.updatedAt != widget.document.updatedAt ||
+        oldWidget.document.source != widget.document.source) {
+      _printSurfaceLease = mountPrintSurface(widget.document.source);
+    }
     _rebuildBlocksIfNeeded();
   }
 
   @override
   void dispose() {
+    unmountPrintSurface(_printSurfaceLease);
     _positionsListener.itemPositions.removeListener(_onPositionsChanged);
     _saveDebounce?.cancel();
     _flushPosition();

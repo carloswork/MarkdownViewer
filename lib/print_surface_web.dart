@@ -7,6 +7,7 @@ import 'dart:js_interop';
 import 'package:web/web.dart' as web;
 
 import 'print_html.dart';
+import 'print_surface_lifecycle.dart';
 
 const _surfaceId = 'df026-print';
 const _styleId = 'df026-print-style';
@@ -15,6 +16,9 @@ const _statusStyleId = 'df026-print-status-style';
 const _compiledOwner = 'main.dart.js';
 
 Future<int>? _printFontsReady;
+final _lifecycle = PrintSurfaceLifecycle();
+
+const _bodyStateAttribute = 'data-df026-print-state';
 
 const _statusCss = r'''
 #df026-print-status {
@@ -63,7 +67,8 @@ const _statusCss = r'''
     background: white !important;
     color: black !important;
   }
-  body > *:not(#df026-print-status):not(#df026-print) {
+  body[data-df026-print-state="status"] >
+    *:not(#df026-print-status):not(#df026-print) {
     display: none !important;
   }
   #df026-print-status {
@@ -131,10 +136,11 @@ const _printCss = r'''
     background: white !important;
     color: black !important;
   }
-  body > *:not(#df026-print):not(#df026-print-status) {
+  body[data-df026-print-state="ready"] >
+    *:not(#df026-print):not(#df026-print-status) {
     display: none !important;
   }
-  flutter-view {
+  body[data-df026-print-state="ready"] flutter-view {
     display: none !important;
   }
   #df026-print {
@@ -249,13 +255,24 @@ Future<int> _loadPrintFonts(web.Document document) async {
   return loadedFaces.length;
 }
 
-void mountPrintSurface(String markdownSource) {
-  unawaited(_mountPrintSurface(markdownSource));
+PrintSurfaceLease mountPrintSurface(String markdownSource) {
+  final lease = _lifecycle.beginMount();
+  unawaited(_mountPrintSurface(markdownSource, lease));
+  return lease;
 }
 
-Future<void> _mountPrintSurface(String markdownSource) async {
+void unmountPrintSurface(PrintSurfaceLease lease) {
+  if (!_lifecycle.release(lease)) return;
+  _removePrintState(web.document);
+}
+
+Future<void> _mountPrintSurface(
+  String markdownSource,
+  PrintSurfaceLease lease,
+) async {
   final document = web.document;
 
+  _removePrintState(document);
   _showPrintStatus(document, failed: false);
   _installStatusStyle(document);
 
@@ -278,6 +295,7 @@ Future<void> _mountPrintSurface(String markdownSource) async {
   try {
     loadedFaceCount = await fontsReady;
   } on Object {
+    if (!_lifecycle.isCurrent(lease)) return;
     // A rejected CSS FontFace remains failed even if the asset later becomes
     // available. Drop both the cached Future and the stylesheet that owns
     // those faces so a later reader mount can construct and load fresh faces.
@@ -290,6 +308,8 @@ Future<void> _mountPrintSurface(String markdownSource) async {
     return;
   }
 
+  if (!_lifecycle.isCurrent(lease)) return;
+
   document.getElementById(_surfaceId)?.remove();
   final surface = document.createElement('main')
     ..id = _surfaceId
@@ -300,8 +320,16 @@ Future<void> _mountPrintSurface(String markdownSource) async {
     ..setAttribute('data-df026-font-set-status', document.fonts.status)
     ..innerHTML = buildPrintHtml(markdownSource).toJS;
   document.body!.appendChild(surface);
+  document.body!.setAttribute(_bodyStateAttribute, 'ready');
   document.getElementById(_statusId)?.remove();
   document.getElementById(_statusStyleId)?.remove();
+}
+
+void _removePrintState(web.Document document) {
+  document.getElementById(_surfaceId)?.remove();
+  document.getElementById(_statusId)?.remove();
+  document.getElementById(_statusStyleId)?.remove();
+  document.body?.removeAttribute(_bodyStateAttribute);
 }
 
 void _installStatusStyle(web.Document document) {
@@ -342,4 +370,5 @@ void _showPrintStatus(web.Document document, {required bool failed}) {
   if (status.parentNode == null) {
     document.body!.appendChild(status);
   }
+  document.body!.setAttribute(_bodyStateAttribute, 'status');
 }
