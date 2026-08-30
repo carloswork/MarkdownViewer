@@ -9,6 +9,7 @@ import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import 'links.dart';
 import 'markdown_theme.dart';
 import 'models.dart';
+import 'print_surface.dart';
 import 'settings_sheet.dart';
 import 'store.dart';
 import 'toc_sheet.dart';
@@ -71,6 +72,7 @@ class _ReaderScreenState extends State<ReaderScreen>
     WidgetsBinding.instance.addObserver(this);
     _restore = store.loadPosition(widget.document.id);
     _positionsListener.itemPositions.addListener(_onPositionsChanged);
+    mountPrintSurface(widget.document.source);
   }
 
   @override
