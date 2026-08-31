@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.0.4 — 2026-09-01
+
+- Release builds now write `index.html` as BOM-less UTF-8 consistently across supported PowerShell versions.
+
 ## v1.0.3 — 2026-08-31
 
 - Printing from the browser now produces the whole document across as many pages as it needs, instead of only the part that was visible on screen. Printed pages use a light, paper-oriented layout without the application's toolbars.
