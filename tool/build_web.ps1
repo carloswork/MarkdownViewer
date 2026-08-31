@@ -80,10 +80,29 @@ try {
         throw 'CSP markers not found in build\web\index.html. Has web/index.html been edited? Expected <!-- CSP:BEGIN --> ... <!-- CSP:END -->.'
     }
     $html = [regex]::Replace($html, $pattern, ($releaseCsp -replace '\$', '$$$$'), 1)
-    Set-Content -Path $indexPath -Value $html -Encoding utf8 -NoNewline
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false, $true)
+    [System.IO.File]::WriteAllText($indexPath, $html, $utf8NoBom)
 
     # Verify what actually landed on disk, not what we intended to write.
-    $result = Get-Content $indexPath -Raw
+    $expectedBytes = $utf8NoBom.GetBytes($html)
+    $actualBytes = [System.IO.File]::ReadAllBytes($indexPath)
+    if ($actualBytes.Length -ge 3 -and
+        $actualBytes[0] -eq 0xEF -and $actualBytes[1] -eq 0xBB -and $actualBytes[2] -eq 0xBF) {
+        throw 'Release index.html unexpectedly contains a UTF-8 BOM (EF BB BF).'
+    }
+    if ($actualBytes.Length -ne $expectedBytes.Length) {
+        throw "Release index.html byte length mismatch: expected $($expectedBytes.Length), actual $($actualBytes.Length)."
+    }
+    for ($byteOffset = 0; $byteOffset -lt $expectedBytes.Length; $byteOffset++) {
+        if ($actualBytes[$byteOffset] -ne $expectedBytes[$byteOffset]) {
+            throw ('Release index.html byte mismatch at offset {0}: expected 0x{1:X2}, actual 0x{2:X2}.' -f
+                $byteOffset, $expectedBytes[$byteOffset], $actualBytes[$byteOffset])
+        }
+    }
+    $result = $utf8NoBom.GetString($actualBytes)
+    if (-not [string]::Equals($result, $html, [System.StringComparison]::Ordinal)) {
+        throw 'Release index.html strict UTF-8 decode does not match the transformed HTML.'
+    }
     # Match within a single directive only: [^;"] stops at the next directive and
     # at the end of the content attribute. Without that, script-src checks would
     # run on into style-src's entirely legitimate 'unsafe-inline'.
