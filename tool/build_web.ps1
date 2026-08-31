@@ -56,6 +56,7 @@ try {
   ">
   <!-- CSP:END -->
 '@
+    $releaseCsp = $releaseCsp -replace '\r\n?', "`n"
 
     Write-Host 'Building release web bundle...' -ForegroundColor Cyan
     # Windows PowerShell turns any native stderr output into a terminating error
