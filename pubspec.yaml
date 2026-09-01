@@ -1,7 +1,7 @@
 name: markdown_viewer
 description: "A private, mobile-first reader for long technical Markdown documents. All content stays on the device."
 publish_to: 'none'
-version: 1.0.4+5
+version: 1.0.5+6
 
 environment:
   sdk: ^3.12.2

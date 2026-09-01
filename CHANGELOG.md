@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.0.5 — 2026-09-01
+
+- Release builds now keep generated `index.html` bytes consistent whether the build script is checked out with LF or CRLF line endings.
+
 ## v1.0.4 — 2026-09-01
 
 - Release builds now write `index.html` as BOM-less UTF-8 consistently across supported PowerShell versions.
