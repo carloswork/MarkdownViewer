@@ -370,10 +370,27 @@ code
   test('df026-long retained fixture matches its golden output', () {
     final source = File('test/fixtures/df026-long.md').readAsStringSync();
     final golden = File('test/goldens/df026-long.html').readAsStringSync();
+    final actual = buildPrintHtml(source);
 
-    expect(buildPrintHtml(source), golden);
+    // CRLF versus LF is not a DF-026 product invariant. Normalize CRLF only,
+    // preserving ordinal comparison of every other character.
+    final normalizedActual = _normalizeCrLf(actual);
+    final normalizedGolden = _normalizeCrLf(golden);
+    expect(normalizedActual, normalizedGolden);
+
+    final crlfGolden = normalizedGolden.replaceAll('\n', '\r\n');
+    expect(_normalizeCrLf(crlfGolden), normalizedGolden);
+
+    final mutatedGolden = normalizedGolden.replaceFirst(
+      'DF-026 Print Fixture',
+      'XF-026 Print Fixture',
+    );
+    expect(mutatedGolden, isNot(normalizedGolden));
+    expect(_normalizeCrLf(mutatedGolden), isNot(normalizedActual));
   });
 }
+
+String _normalizeCrLf(String value) => value.replaceAll('\r\n', '\n');
 
 Set<String> _emittedAttributeNames(String html) {
   final names = <String>{};
