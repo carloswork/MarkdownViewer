@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.0.6 — 2026-09-03
+
+- Updated the Flutter runtime so unsupported characters no longer trigger an ongoing font-fallback retry loop. Unsupported characters may still appear as missing-glyph boxes.
+
 ## v1.0.5 — 2026-09-01
 
 - Release builds now keep generated `index.html` bytes consistent whether the build script is checked out with LF or CRLF line endings.
