@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:markdown_viewer/han_script.dart';
+import 'package:markdown_viewer/print_fonts.dart';
 
 import 'support/opentype.dart';
 
@@ -642,23 +643,113 @@ void main() {
       }
     });
 
-    test('CP-B declares no print @font-face inventory yet', () {
-      // Print parity is CP-C. Asserting the absence keeps property 11 truthful
-      // at this checkpoint; CP-C replaces this with the print half of the
-      // cross-inventory assertion, exactly as CP-B replaced CP-A's.
-      final printSurface = File('lib/print_surface_web.dart').readAsStringSync();
+    // REPLACED AT CP-C, as the test it replaces said it would be.
+    //
+    // The CP-B test asserted the print `@font-face` inventory was *absent*,
+    // because print parity was CP-C and inventing declarations to satisfy a
+    // cross-inventory check would have been dishonest. Its own comment named
+    // CP-C as the checkpoint that "replaces this with the print half of the
+    // cross-inventory assertion". This is that replacement, and it is strictly
+    // stronger: the negative form now passes vacuously, since the declarations
+    // live in `lib/print_fonts.dart` rather than in the surface it read.
+    test('the print inventories agree: kPrintFontFaces, kHanScriptPacks and '
+        'the shipped assets', () {
+      for (final pack in kHanScriptPacks) {
+        final face = kPrintFontFaces.singleWhere(
+          (face) => face.family == pack.printFamily,
+          orElse: () => fail(
+            '${pack.printFamily} must have exactly one print @font-face',
+          ),
+        );
+        expect(
+          face.assetUrl,
+          '/assets/${pack.asset}',
+          reason: 'the print rule must serve the asset the pack declares',
+        );
+        expect(File(pack.asset).existsSync(), isTrue);
+        expect(
+          buildPrintCss(kDefaultHanScript),
+          contains('src: url("${face.assetUrl}") format("opentype");'),
+          reason:
+              'the two derivatives carry CFF outlines, so the format hint is '
+              'opentype rather than the truetype the five DF-026 rules use',
+        );
+      }
+      expect(
+        kPrintFontFaces.map((face) => face.family).toSet(),
+        containsAll(kHanScriptPacks.map((pack) => pack.printFamily)),
+      );
+    });
+
+    test('the print surface declares no font inventory of its own', () {
+      // One inventory, not two lists that can drift: the surface consumes
+      // `kPrintFontFaces` and neither restates a family nor counts faces.
+      final printSurface = File(
+        'lib/print_surface_web.dart',
+      ).readAsStringSync();
+
+      expect(printSurface, contains('kPrintFontFaces'));
+      expect(printSurface, contains('printFontsAreReady'));
       for (final pack in kHanScriptPacks) {
         expect(
           printSurface.contains(pack.printFamily),
           isFalse,
           reason:
-              '${pack.printFamily} is the print @font-face family and belongs '
-              'to CP-C, not CP-B',
+              '${pack.printFamily} must be declared once, in the inventory, '
+              'not restated in the surface',
         );
         expect(
           printSurface.contains(pack.family),
           isFalse,
           reason: 'the Viewer family ${pack.family} is not a print declaration',
+        );
+      }
+      expect(
+        RegExp(r'loadedFaces\.length != \d').hasMatch(printSurface),
+        isFalse,
+        reason:
+            'the hard-coded face count was named as a fail-closed hazard and '
+            'is replaced by a count derived from the declared inventory',
+      );
+    });
+
+    test('each Han print probe is carried only by the face it proves', () {
+      // What stops a `FontFaceSet.check` passing against the wrong face. Read
+      // from the shipped binaries themselves rather than from the generated
+      // tables, so this holds even if the tables and the fonts ever disagree.
+      final coverage = <HanScript, Set<int>>{
+        for (final pack in kHanScriptPacks)
+          pack.script: _load(pack.asset).cmapCoverage.codePoints,
+      };
+      final baseline = _baselineUnion();
+
+      for (final pack in kHanScriptPacks) {
+        final probe = kHanPrintProbes[pack.script]!;
+        final codePoint = probe.runes.single;
+
+        expect(
+          coverage[pack.script]!.contains(codePoint),
+          isTrue,
+          reason:
+              '$probe must be in ${pack.family}\'s realised cmap, or the probe '
+              'could never pass',
+        );
+        for (final other in kHanScriptPacks) {
+          if (other.script == pack.script) continue;
+          expect(
+            coverage[other.script]!.contains(codePoint),
+            isFalse,
+            reason:
+                'a probe both faces carried would report ready for a face '
+                'that never arrived',
+          );
+        }
+        expect(
+          baseline.contains(codePoint),
+          isFalse,
+          reason:
+              'no baseline face carries it either, so a passing check names '
+              'exactly this face',
         );
       }
     });

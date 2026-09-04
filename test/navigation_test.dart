@@ -8,6 +8,11 @@ import 'package:markdown_viewer/home_screen.dart';
 import 'package:markdown_viewer/main.dart';
 import 'package:markdown_viewer/markdown_theme.dart';
 import 'package:markdown_viewer/models.dart';
+import 'package:markdown_viewer/print_fonts.dart';
+// The print surface is behind a conditional import: in a VM test
+// `print_surface.dart` resolves to exactly this library, so the mounts recorded
+// here are the ones ReaderScreen made.
+import 'package:markdown_viewer/print_surface_stub.dart';
 import 'package:markdown_viewer/reader_screen.dart';
 
 /// Covers the home/reader changes from Refinement Round 1.
@@ -959,15 +964,117 @@ void main() {
       );
     });
 
-    test('didUpdateWidget compares the preference (§5.5 fact 3)', () {
-      // Stated honestly: at CP-B this cannot be asserted behaviourally.
-      // `mountPrintSurface` still takes only the source, so remounting on a
-      // preference change produces an identical print surface and no widget
-      // test can tell the comparison from its absence. Threading the resolved
-      // script into that signature is CP-C, and until then the comparison would
-      // be silently deletable. This pins it structurally so it survives to CP-C,
-      // where it becomes load-bearing: without it, print would keep the previous
-      // resolved chain while the Viewer showed the new one.
+    // REPLACED AT CP-C, as the test it replaces said it would be.
+    //
+    // The CP-B test here was structural, and said so: `mountPrintSurface` took
+    // only the source, so remounting on a preference change produced an
+    // identical print surface and no widget test could tell the comparison
+    // from its absence. It pinned the comparison until CP-C made it
+    // load-bearing. CP-C threads the resolved script through that signature,
+    // so the property is now asserted behaviourally instead - the remount is
+    // observable, and it carries the new chain.
+    testWidgets('changing the preference re-mounts the print surface with the '
+        'newly resolved chain (§5.5 fact 3)', (tester) async {
+      useTallViewport(tester);
+      resetPrintSurfaceMounts();
+      await tester.pumpWidget(const _PreferenceHost());
+      await settle(tester);
+
+      // The reader mounted the print surface once, with the detected script.
+      expect(printSurfaceMountCount, 1);
+      expect(lastPrintSurfaceMount!.script, HanScript.hant);
+
+      // Drive the real control, exactly as a user would.
+      await tester.tap(find.byIcon(Icons.more_horiz_rounded));
+      await settle(tester);
+      await tester.tap(find.text('Language'));
+      await settle(tester);
+      await tester.tap(find.text('Simplified Chinese'));
+      await settle(tester);
+
+      // 1. It re-mounted. Without the preference in `didUpdateWidget`'s
+      //    comparison this stays at 1: a preference change deliberately does
+      //    not move `id`, `updatedAt` or `source`.
+      expect(
+        printSurfaceMountCount,
+        2,
+        reason:
+            'the print surface must be re-mounted when the preference changes',
+      );
+
+      // 2. It re-mounted with the NEW resolved script, not the old one. This
+      //    is the parity break §6 exists to prevent: print keeping the previous
+      //    chain while the Viewer shows the new one.
+      expect(lastPrintSurfaceMount!.script, HanScript.hans);
+
+      final hostState = tester.state<_PreferenceHostState>(
+        find.byType(_PreferenceHost),
+      );
+      expect(lastPrintSurfaceMount!.markdownSource, hostState.document.source);
+
+      // 3. The stacks built from what print was handed lead with the pack the
+      //    user chose.
+      expect(
+        printProportionalStack(lastPrintSurfaceMount!.script),
+        '"DF026Roboto", "DF026Emoji", "DF026Mono", "DF031Hans", '
+        '"DF031Hant", sans-serif',
+      );
+      expect(
+        printMonospaceStack(lastPrintSurfaceMount!.script),
+        '"DF026Mono", "DF026Emoji", "DF031Hans", "DF031Hant", monospace',
+      );
+    });
+
+    for (final entry in <DocumentScriptPreference, HanScript>{
+      DocumentScriptPreference.auto: HanScript.hant,
+      DocumentScriptPreference.simplifiedChinese: HanScript.hans,
+      DocumentScriptPreference.traditionalChinese: HanScript.hant,
+    }.entries) {
+      testWidgets('print and the Viewer take one resolution under '
+          '${entry.key.name}', (tester) async {
+        // §12 CP-C item 1. The host document is unambiguously Traditional, so
+        // under `simplifiedChinese` the detector and the resolution disagree -
+        // which is exactly the case a print surface that re-derived the script
+        // from the source alone would get wrong, because it cannot see the
+        // preference.
+        useTallViewport(tester);
+        resetPrintSurfaceMounts();
+        await tester.pumpWidget(_PreferenceHost(preference: entry.key));
+        await settle(tester);
+
+        final hostState = tester.state<_PreferenceHostState>(
+          find.byType(_PreferenceHost),
+        );
+        final resolved = resolveHanScriptForDocument(hostState.document);
+        expect(resolved, entry.value);
+
+        // Print was handed the resolved script...
+        expect(lastPrintSurfaceMount!.script, resolved);
+        // ...and the Viewer rendered the chain for the same one.
+        expect(
+          tester
+              .widget<Text>(find.text(_kCodeMarker))
+              .style
+              ?.fontFamilyFallback,
+          codeFontFallbackFor(resolved),
+        );
+        // The Viewer chain and the print chain lead with the same pack.
+        expect(
+          hanFamiliesFor(resolved).first,
+          hanScriptPackFor(resolved).family,
+        );
+        expect(
+          printHanFamiliesFor(resolved).first,
+          hanScriptPackFor(resolved).printFamily,
+        );
+      });
+    }
+
+    test('didUpdateWidget still compares all four fields', () {
+      // The behavioural test above proves the preference comparison. The other
+      // three are what remount print for a replaced or edited document, and no
+      // test in this file distinguishes their presence from their absence, so
+      // they stay pinned structurally.
       final reader = _readNormalised('lib/reader_screen.dart');
       final start = reader.indexOf('void didUpdateWidget');
       expect(start, greaterThan(-1));
@@ -990,8 +1097,9 @@ void main() {
       expect(body, contains('mountPrintSurface'));
       expect(
         body,
-        contains('CP-C'),
-        reason: 'the deferred print-side work must stay signposted',
+        contains('script:'),
+        reason:
+            'the remount must carry the resolved script, not just the source',
       );
     });
 

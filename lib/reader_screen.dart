@@ -84,7 +84,10 @@ class _ReaderScreenState extends State<ReaderScreen>
     WidgetsBinding.instance.addObserver(this);
     _restore = store.loadPosition(widget.document.id);
     _positionsListener.itemPositions.addListener(_onPositionsChanged);
-    _printSurfaceLease = mountPrintSurface(widget.document.source);
+    _printSurfaceLease = mountPrintSurface(
+      widget.document.source,
+      script: _resolvedScript,
+    );
   }
 
   @override
@@ -105,15 +108,15 @@ class _ReaderScreenState extends State<ReaderScreen>
         // comparisons above - it deliberately does not bump `updatedAt` - so
         // without this the print surface would keep the previously resolved
         // chain while the Viewer showed the new one, which is exactly the
-        // parity break §6 exists to prevent.
-        //
-        // TODO(DF-031 CP-C): thread the resolved HanScript into
-        // mountPrintSurface so the print stack actually rebuilds with the new
-        // chain. Changing that signature is CP-C scope; at CP-B the comparison
-        // is in place and the remount is a no-op re-render of the same source.
+        // parity break §6 exists to prevent. The remount below carries the
+        // newly resolved script, so the print stacks are rebuilt in the new
+        // order rather than re-rendered in the old one.
         oldWidget.document.scriptPreference !=
             widget.document.scriptPreference) {
-      _printSurfaceLease = mountPrintSurface(widget.document.source);
+      _printSurfaceLease = mountPrintSurface(
+        widget.document.source,
+        script: _resolvedScript,
+      );
     }
     _rebuildBlocksIfNeeded();
   }

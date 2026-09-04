@@ -6,6 +6,8 @@ import 'dart:js_interop';
 // ignore: depend_on_referenced_packages
 import 'package:web/web.dart' as web;
 
+import 'han_script.dart';
+import 'print_fonts.dart';
 import 'print_html.dart';
 import 'print_surface_lifecycle.dart';
 
@@ -81,169 +83,30 @@ const _statusCss = r'''
 }
 ''';
 
-const _printCss = r'''
-@font-face {
-  font-family: "DF026Roboto";
-  src: url("/assets/fonts/Roboto-Regular.ttf") format("truetype");
-  font-weight: 400;
-  font-style: normal;
-  font-display: block;
-}
-@font-face {
-  font-family: "DF026Roboto";
-  src: url("/assets/fonts/Roboto-Italic.ttf") format("truetype");
-  font-weight: 400;
-  font-style: italic;
-  font-display: block;
-}
-@font-face {
-  font-family: "DF026Roboto";
-  src: url("/assets/fonts/Roboto-Bold.ttf") format("truetype");
-  font-weight: 700;
-  font-style: normal;
-  font-display: block;
-}
-@font-face {
-  font-family: "DF026Mono";
-  src: url("/assets/fonts/CascadiaMono.ttf") format("truetype");
-  font-weight: 400;
-  font-style: normal;
-  font-display: block;
-}
-@font-face {
-  font-family: "DF026Emoji";
-  src: url("/assets/fonts/TwemojiMozilla.ttf") format("truetype");
-  font-weight: 400;
-  font-style: normal;
-  font-display: block;
-}
-#df026-print {
-  display: none;
-}
-@media print {
-  @page {
-    size: A4 portrait;
-    margin: 12mm;
-  }
-  html,
-  body {
-    position: static !important;
-    inset: auto !important;
-    width: auto !important;
-    height: auto !important;
-    min-height: 0 !important;
-    overflow: visible !important;
-    background: white !important;
-    color: black !important;
-  }
-  body[data-df026-print-state="ready"] >
-    *:not(#df026-print):not(#df026-print-status) {
-    display: none !important;
-  }
-  body[data-df026-print-state="ready"] flutter-view {
-    display: none !important;
-  }
-  #df026-print {
-    display: block !important;
-    position: static !important;
-    box-sizing: border-box;
-    width: auto !important;
-    max-width: none !important;
-    overflow: visible !important;
-    font: 10pt/1.35 "DF026Roboto", "DF026Emoji", "DF026Mono", sans-serif;
-    color: black;
-    background: white;
-  }
-  #df026-print h1 {
-    font-size: 18pt;
-  }
-  #df026-print h2 {
-    font-size: 14pt;
-    break-after: avoid;
-  }
-  #df026-print h3 {
-    font-size: 11pt;
-    break-after: avoid;
-  }
-  #df026-print p,
-  #df026-print ul,
-  #df026-print ol,
-  #df026-print blockquote,
-  #df026-print pre,
-  #df026-print table {
-    margin: 0 0 7pt;
-  }
-  #df026-print blockquote {
-    margin-left: 12pt;
-    padding-left: 8pt;
-    border-left: 2pt solid #777;
-  }
-  #df026-print pre {
-    box-sizing: border-box;
-    max-width: 100%;
-    padding: 5pt;
-    overflow: visible;
-    background: #f3f3f3;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    word-break: break-word;
-    font: 8.6pt/1.25 "DF026Mono", "DF026Emoji", monospace;
-  }
-  #df026-print code {
-    font-family: "DF026Mono", "DF026Emoji", monospace;
-  }
-  #df026-print table {
-    box-sizing: border-box;
-    width: 100%;
-    max-width: 100%;
-    table-layout: fixed;
-    border-collapse: collapse;
-    font-size: 8.6pt;
-  }
-  #df026-print th,
-  #df026-print td {
-    box-sizing: border-box;
-    min-width: 0;
-    border: 0.5pt solid #777;
-    padding: 2pt;
-    overflow-wrap: anywhere;
-    word-break: break-word;
-  }
-  #df026-print thead {
-    display: table-header-group;
-  }
-  #df026-print hr {
-    border: 0;
-    border-top: 0.5pt solid #777;
-  }
-  #df026-print a {
-    color: inherit;
-  }
-}
-''';
 
 Future<int> _loadPrintFonts(web.Document document) async {
   final fonts = document.fonts;
+  // Loads, probes and the expected count all come from the one declared
+  // inventory in `print_fonts.dart`. The count is derived rather than written
+  // down, so a face cannot be declared and then silently not required
+  // (plan.md §6 item 4).
   final loadedFaceSets = await Future.wait(<Future<JSArray<web.FontFace>>>[
-    fonts.load('400 10pt "DF026Roboto"', 'Regular').toDart,
-    fonts.load('italic 400 10pt "DF026Roboto"', 'Italic').toDart,
-    fonts.load('700 10pt "DF026Roboto"', 'Bold').toDart,
-    fonts.load('400 10pt "DF026Mono"', '→').toDart,
-    fonts.load('400 10pt "DF026Emoji"', '⚠️ ✅ ❌ 🎉 🚀').toDart,
+    for (final face in kPrintFontFaces)
+      fonts.load(face.fontShorthand, face.probe).toDart,
   ]);
   final loadedFaces = loadedFaceSets
       .expand((faces) => faces.toDart)
       .toList(growable: false);
   final checks = <bool>[
-    fonts.check('400 10pt "DF026Roboto"', 'Regular'),
-    fonts.check('italic 400 10pt "DF026Roboto"', 'Italic'),
-    fonts.check('700 10pt "DF026Roboto"', 'Bold'),
-    fonts.check('400 10pt "DF026Mono"', '→'),
-    fonts.check('400 10pt "DF026Emoji"', '⚠️ ✅ ❌ 🎉 🚀'),
+    for (final face in kPrintFontFaces)
+      fonts.check(face.fontShorthand, face.probe),
   ];
-  if (loadedFaces.length != 5 ||
-      loadedFaces.any((face) => face.status != 'loaded') ||
-      checks.any((ready) => !ready)) {
+  if (!printFontsAreReady(
+    loadedFaceStatuses: <String>[
+      for (final face in loadedFaces) face.status,
+    ],
+    probeResults: checks,
+  )) {
     throw StateError('The bundled print font stack did not become ready.');
   }
   await fonts.ready.toDart;
@@ -255,9 +118,12 @@ Future<int> _loadPrintFonts(web.Document document) async {
   return loadedFaces.length;
 }
 
-PrintSurfaceLease mountPrintSurface(String markdownSource) {
+PrintSurfaceLease mountPrintSurface(
+  String markdownSource, {
+  required HanScript script,
+}) {
   final lease = _lifecycle.beginMount();
-  unawaited(_mountPrintSurface(markdownSource, lease));
+  unawaited(_mountPrintSurface(markdownSource, script, lease));
   return lease;
 }
 
@@ -268,6 +134,7 @@ void unmountPrintSurface(PrintSurfaceLease lease) {
 
 Future<void> _mountPrintSurface(
   String markdownSource,
+  HanScript script,
   PrintSurfaceLease lease,
 ) async {
   final document = web.document;
@@ -276,13 +143,26 @@ Future<void> _mountPrintSurface(
   _showPrintStatus(document, failed: false);
   _installStatusStyle(document);
 
-  var style = document.getElementById(_styleId);
+  // The stacks depend on the resolved script, which the caller passes in. It is
+  // deliberately not re-derived here: this code cannot see the document's
+  // preference, so re-deriving it would reintroduce exactly the Viewer/print
+  // divergence §6 exists to prevent.
+  final css = buildPrintCss(script);
+  final style = document.getElementById(_styleId);
   if (style == null) {
-    style = document.createElement('style')
+    final installed = document.createElement('style')
       ..id = _styleId
       ..setAttribute('data-df026-owner', _compiledOwner)
-      ..textContent = _printCss;
-    document.head!.appendChild(style);
+      ..textContent = css;
+    document.head!.appendChild(installed);
+  } else if (style.textContent != css) {
+    // The resolved script changed, so the stacks did. Replacing the sheet's
+    // text re-parses its @font-face rules, which discards the CSS-connected
+    // FontFace objects the cached load resolved against and re-adds them
+    // unloaded - so the cache is dropped with them and the faces are loaded and
+    // proven again rather than assumed still ready.
+    style.textContent = css;
+    _printFontsReady = null;
   }
 
   // `display:none` defers CSS font discovery until printing. Start every
