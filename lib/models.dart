@@ -31,6 +31,27 @@ DocumentOrigin _originFromName(String? name) {
   );
 }
 
+/// A document-level rendering/script preference.
+///
+/// Deliberately not named for Chinese: DF-031 ships the three values below, and
+/// a future script ticket adds another without renaming anything. The UI calls
+/// this control `Language`; the internal vocabulary is allowed to differ, and
+/// plan.md §5.6.2 records that as a decision rather than an inconsistency.
+///
+/// An explicit value outranks a source change, not merely a detection result:
+/// editing the document does not clear it and reopening does not clear it. It is
+/// cleared by exactly two things - the user selecting `Auto`, or the document
+/// being replaced, which is not really a clearing since the preference lived
+/// inside the document that was cleared (plan.md §5.4.1).
+enum DocumentScriptPreference { auto, traditionalChinese, simplifiedChinese }
+
+DocumentScriptPreference _scriptPreferenceFromName(String? name) {
+  return DocumentScriptPreference.values.firstWhere(
+    (p) => p.name == name,
+    orElse: () => DocumentScriptPreference.auto,
+  );
+}
+
 /// Shown when a document has no filename of its own.
 const String kPastedDocumentLabel = 'Pasted document';
 
@@ -47,6 +68,7 @@ class MarkdownDocument {
     required this.updatedAt,
     this.sourceName,
     this.origin = DocumentOrigin.pasted,
+    this.scriptPreference = DocumentScriptPreference.auto,
   });
 
   final String id;
@@ -61,6 +83,13 @@ class MarkdownDocument {
 
   final DocumentOrigin origin;
 
+  /// Which regional convention this document is rendered in.
+  ///
+  /// A presentation preference that belongs to the document, not to `Settings`:
+  /// `Settings` is app-wide and shared with the home screen, and a per-document
+  /// value there would misrepresent its scope (plan.md §5.6.1, §5.7.1).
+  final DocumentScriptPreference scriptPreference;
+
   /// How the document identifies itself in the UI.
   String get identityLabel => sourceName ?? kPastedDocumentLabel;
 
@@ -74,6 +103,7 @@ class MarkdownDocument {
     String? title,
     String? source,
     DateTime? updatedAt,
+    DocumentScriptPreference? scriptPreference,
   }) {
     return MarkdownDocument(
       id: id,
@@ -84,6 +114,10 @@ class MarkdownDocument {
       // Editing changes the local copy, never where it came from.
       sourceName: sourceName,
       origin: origin,
+      // Preserved when not passed, exactly like sourceName and origin: an
+      // explicit preference survives an edit, and the edited source does not
+      // override it (plan.md §5.4.1, §5.6.5).
+      scriptPreference: scriptPreference ?? this.scriptPreference,
     );
   }
 
@@ -95,11 +129,13 @@ class MarkdownDocument {
     'updatedAt': updatedAt.toIso8601String(),
     'sourceName': sourceName,
     'origin': origin.name,
+    'scriptPreference': scriptPreference.name,
   };
 
   /// Tolerates documents written by any earlier build: a stored document with no
-  /// `sourceName`/`origin` reads back as a pasted document, which is what it was.
-  /// No migration step and no schema version are needed.
+  /// `sourceName`/`origin` reads back as a pasted document, which is what it was,
+  /// and one with no `scriptPreference` reads back as `auto`, which is what it
+  /// was. No migration step and no schema version are needed.
   static MarkdownDocument fromJson(Map<String, dynamic> json) {
     return MarkdownDocument(
       id: json['id'] as String,
@@ -113,12 +149,19 @@ class MarkdownDocument {
           DateTime.now(),
       sourceName: json['sourceName'] as String?,
       origin: _originFromName(json['origin'] as String?),
+      scriptPreference: _scriptPreferenceFromName(
+        json['scriptPreference'] as String?,
+      ),
     );
   }
 
   /// Builds a document from freshly pasted, loaded or edited text.
   ///
   /// Passing [sourceName] marks it as file-loaded.
+  ///
+  /// Deliberately takes no [scriptPreference]: a new document is always `auto`,
+  /// so a previous document's explicit preference cannot be inherited by the one
+  /// that replaces it (plan.md §5.7.1, §5.7.3).
   factory MarkdownDocument.fromSource(
     String source, {
     String? id,

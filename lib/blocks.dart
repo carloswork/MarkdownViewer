@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:markdown_widget/markdown_widget.dart';
 
+import 'han_script.dart';
 import 'markdown_theme.dart';
 
 /// Above this many characters, syntax highlighting is skipped.
@@ -22,12 +23,21 @@ class CodeBlock extends StatelessWidget {
     required this.language,
     required this.palette,
     required this.wrap,
+    this.script = kDefaultHanScript,
   });
 
   final String code;
   final String language;
   final ReaderPalette palette;
   final bool wrap;
+
+  /// The document's resolved Han lead, threaded from `buildMarkdownConfig`.
+  ///
+  /// The fenced-code `baseStyle` is built here rather than in `markdown_theme`,
+  /// so without this the Han families would reach inline code and prose but not
+  /// fenced blocks - and technical Markdown routinely puts Chinese identifiers
+  /// and comments inside them (plan.md §7.2).
+  final HanScript script;
 
   @override
   Widget build(BuildContext context) {
@@ -37,7 +47,7 @@ class CodeBlock extends StatelessWidget {
       fontSize: kBodyFontSize - 3,
       height: 1.45,
       color: palette.text,
-      fontFamilyFallback: kCodeFontFallback,
+      fontFamilyFallback: codeFontFallbackFor(script),
     );
 
     final text = _buildCodeText(trimmed, baseStyle);

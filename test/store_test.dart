@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:markdown_viewer/han_script.dart';
 import 'package:markdown_viewer/models.dart';
 import 'package:markdown_viewer/store.dart';
 
@@ -109,6 +110,69 @@ void main() {
     expect(store.loadDocument(), isNull);
     expect(store.loadPosition(document.id), isNull);
   });
+
+  // DF-031 case 13: save, reload through Store, reopen. The preference lives
+  // inside the document, so `Store` itself is unchanged - `saveDocument`
+  // already serialises the whole document (plan.md §5.7.1).
+  test('an explicit script preference survives a save and reload', () async {
+    final document = MarkdownDocument.fromSource(
+      '# 報告\n\n說編輯設與錯誤處請閱讀單',
+    ).copyWith(scriptPreference: DocumentScriptPreference.simplifiedChinese);
+
+    await store.saveDocument(document);
+
+    // Reopen: exactly what main() does at launch and _continueReading relies on.
+    final reopened = store.loadDocument();
+    expect(reopened, isNotNull);
+    expect(
+      reopened!.scriptPreference,
+      DocumentScriptPreference.simplifiedChinese,
+    );
+    expect(reopened.id, document.id);
+    expect(reopened.updatedAt, document.updatedAt);
+
+    // Restored AND applied: the explicit preference still beats the source,
+    // which unambiguously reads Traditional.
+    expect(resolveHanScript(reopened.source), HanScript.hant);
+    expect(resolveHanScriptForDocument(reopened), HanScript.hans);
+  });
+
+  test(
+    'a persisted auto document is re-detected from its current source',
+    () async {
+      final document = MarkdownDocument.fromSource('# 報告\n\n說編輯設與錯誤處請閱讀單');
+      await store.saveDocument(document);
+
+      final reopened = store.loadDocument()!;
+      expect(reopened.scriptPreference, DocumentScriptPreference.auto);
+      expect(resolveHanScriptForDocument(reopened), HanScript.hant);
+    },
+  );
+
+  test(
+    'a replacement document does not inherit the cleared preference',
+    () async {
+      await store.saveDocument(
+        MarkdownDocument.fromSource('# First').copyWith(
+          scriptPreference: DocumentScriptPreference.traditionalChinese,
+        ),
+      );
+
+      // The _openDocument path: clear, then store a fromSource document.
+      await store.clearDocument();
+      await store.saveDocument(MarkdownDocument.fromSource('# Second'));
+
+      final loaded = store.loadDocument()!;
+      expect(loaded.title, 'Second');
+      expect(
+        loaded.scriptPreference,
+        DocumentScriptPreference.auto,
+        reason:
+            'the preference lived inside the document that was cleared, so it '
+            'cannot be inherited by its replacement (plan.md §5.7.3)',
+      );
+    },
+  );
 
   test('settings round trip and default when absent', () async {
     expect(store.loadSettings().appearance, AppearanceMode.system);

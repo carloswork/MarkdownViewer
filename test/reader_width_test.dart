@@ -76,6 +76,7 @@ void main() {
             ),
             settings: const Settings(),
             onSettingsChanged: (_) {},
+            onScriptPreferenceChanged: (_) {},
             onEdit: () {},
             onLoadFile: () {},
             onReturnHome: () {},

@@ -6,10 +6,12 @@ import 'package:flutter/rendering.dart';
 import 'package:markdown_widget/markdown_widget.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
+import 'han_script.dart';
 import 'links.dart';
 import 'markdown_theme.dart';
 import 'models.dart';
 import 'print_surface.dart';
+import 'script_rendering_sheet.dart';
 import 'settings_sheet.dart';
 import 'store.dart';
 import 'toc_sheet.dart';
@@ -27,6 +29,7 @@ class ReaderScreen extends StatefulWidget {
     required this.document,
     required this.settings,
     required this.onSettingsChanged,
+    required this.onScriptPreferenceChanged,
     required this.onEdit,
     required this.onLoadFile,
     required this.onReturnHome,
@@ -35,6 +38,14 @@ class ReaderScreen extends StatefulWidget {
   final MarkdownDocument document;
   final Settings settings;
   final ValueChanged<Settings> onSettingsChanged;
+
+  /// Persists the document's script preference and rebuilds with it.
+  ///
+  /// A seam only, and deliberately shaped like [onSettingsChanged]: the write is
+  /// a `copyWith` plus a save plus a `setState` in `main.dart`, and it must not
+  /// touch `updatedAt` (plan.md §5.5 fact 4, §5.7.2).
+  final ValueChanged<DocumentScriptPreference> onScriptPreferenceChanged;
+
   final VoidCallback onEdit;
 
   /// Opens the app's existing load-from-file workflow.
@@ -89,7 +100,19 @@ class _ReaderScreenState extends State<ReaderScreen>
     super.didUpdateWidget(oldWidget);
     if (oldWidget.document.id != widget.document.id ||
         oldWidget.document.updatedAt != widget.document.updatedAt ||
-        oldWidget.document.source != widget.document.source) {
+        oldWidget.document.source != widget.document.source ||
+        // §5.5 fact 3. A preference change satisfies none of the three
+        // comparisons above - it deliberately does not bump `updatedAt` - so
+        // without this the print surface would keep the previously resolved
+        // chain while the Viewer showed the new one, which is exactly the
+        // parity break §6 exists to prevent.
+        //
+        // TODO(DF-031 CP-C): thread the resolved HanScript into
+        // mountPrintSurface so the print stack actually rebuilds with the new
+        // chain. Changing that signature is CP-C scope; at CP-B the comparison
+        // is in place and the remount is a no-op re-render of the same source.
+        oldWidget.document.scriptPreference !=
+            widget.document.scriptPreference) {
       _printSurfaceLease = mountPrintSurface(widget.document.source);
     }
     _rebuildBlocksIfNeeded();
@@ -117,16 +140,46 @@ class _ReaderScreenState extends State<ReaderScreen>
 
   // --- Rendering ------------------------------------------------------------
 
+  /// Which Han pack leads for the document currently being read.
+  ///
+  /// A *derived* value, never a stored one: detection is a pure function of the
+  /// effective document source and its own preference, evaluated when that
+  /// source becomes - or changes as - the document being viewed. There is no
+  /// background process and no per-keystroke listener (plan.md §5.6.5).
+  HanScript get _resolvedScript => resolveHanScript(
+    widget.document.source,
+    preference: widget.document.scriptPreference,
+  );
+
+  /// What the **detector** currently returns for this document, ignoring any
+  /// explicit preference.
+  ///
+  /// Deliberately not [_resolvedScript]: the `Auto` row's subordinate text and
+  /// the menu's `Automatic — …` subtitle both have to name what detection says,
+  /// which is how the user tells an inferred convention from a chosen one. Under
+  /// an explicit override the two differ, and showing the override back to the
+  /// user as the "detected" result would make the comparison meaningless
+  /// (plan.md §5.6.2, §5.6.3).
+  HanScript get _detectedScript => resolveHanScript(widget.document.source);
+
   /// Parsing and building the whole document is expensive, so it happens only
   /// when something that actually changes the output changes.
   void _rebuildBlocksIfNeeded() {
     final palette = ReaderPalette.of(context);
     final document = widget.document;
+    final script = _resolvedScript;
     final key = [
       document.id,
       document.updatedAt.microsecondsSinceEpoch,
       palette.isDark,
       widget.settings.wrapCode,
+      // §5.5 fact 2. Setting a preference deliberately does not change
+      // `updatedAt`, so none of the four components above changes when the
+      // language changes and this method would return early, silently keeping
+      // the old chain. The *resolved* script is used rather than the raw
+      // preference because it also covers the `auto` case, where an edit can
+      // change what detection returns without the preference moving at all.
+      script.name,
     ].join('|');
 
     if (key == _blocksKey) return;
@@ -135,6 +188,7 @@ class _ReaderScreenState extends State<ReaderScreen>
       palette: palette,
       wrapCode: widget.settings.wrapCode,
       onLinkTap: _openLink,
+      script: script,
     );
 
     final entries = <TocEntry>[];
@@ -238,6 +292,15 @@ class _ReaderScreenState extends State<ReaderScreen>
         document: widget.document,
         palette: palette,
         hasToc: _toc.isNotEmpty,
+        // Only when the document draws on the shipped Han repertoires at all.
+        // Otherwise the menu looks exactly as it did before DF-031, and a stored
+        // preference - if one somehow exists - is inert, because no character is
+        // ever looked up in either pack (plan.md §5.6.4).
+        hasHan: sourceUsesShippedHan(widget.document.source),
+        languageSubtitle: scriptPreferenceSubtitle(
+          widget.document.scriptPreference,
+          _detectedScript,
+        ),
       ),
     );
     if (!mounted || action == null) return;
@@ -251,6 +314,13 @@ class _ReaderScreenState extends State<ReaderScreen>
           context,
           settings: widget.settings,
           onChanged: widget.onSettingsChanged,
+        );
+      case _MenuAction.language:
+        await showScriptRenderingSheet(
+          context,
+          preference: widget.document.scriptPreference,
+          resolved: _detectedScript,
+          onChanged: widget.onScriptPreferenceChanged,
         );
       case _MenuAction.edit:
         widget.onEdit();
@@ -330,26 +400,36 @@ class _ReaderScreenState extends State<ReaderScreen>
   }
 }
 
-enum _MenuAction { contents, appearance, edit, loadFile, home }
+enum _MenuAction { contents, appearance, edit, loadFile, language, home }
 
 class _ReaderMenu extends StatelessWidget {
   const _ReaderMenu({
     required this.document,
     required this.palette,
     required this.hasToc,
+    required this.hasHan,
+    required this.languageSubtitle,
   });
 
   final MarkdownDocument document;
   final ReaderPalette palette;
   final bool hasToc;
 
+  /// Whether the document uses the shipped Han repertoires at all. Follows the
+  /// established local precedent of [hasToc], which is already conditional.
+  final bool hasHan;
+
+  /// The effective state, shown under the tile.
+  final String languageSubtitle;
+
   @override
   Widget build(BuildContext context) {
     return SafeArea(
       // Scrollable because a modal sheet is capped at a fraction of the
       // viewport height: on a short viewport (a phone in landscape) the header
-      // plus four tiles is taller than the sheet is allowed to be, and a plain
-      // Column overflows instead of scrolling.
+      // plus up to six tiles is taller than the sheet is allowed to be, and a
+      // plain Column overflows instead of scrolling. DF-031's `Language` tile is
+      // the sixth, and is exactly the case this wrapper was written for.
       child: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -436,6 +516,24 @@ class _ReaderMenu extends StatelessWidget {
               palette: palette,
               onTap: () => Navigator.pop(context, _MenuAction.loadFile),
             ),
+            // Between `Load from file` and `Return to main`, and that placement
+            // is a product constraint rather than a cosmetic choice (plan.md
+            // §5.6.2, §1.7 UX-3): every existing tile keeps its current index,
+            // the high-frequency `Load from file` is not pushed down, and
+            // `Return to main` stays last, which is the property that matters to
+            // a terminal navigation action. Reordering this regresses UX-3.
+            if (hasHan)
+              _MenuTile(
+                // `Language`, not `Script rendering`: the latter reads as
+                // implementation vocabulary. The internal model deliberately
+                // keeps the generic name, and plan.md §5.6.2 records the
+                // divergence as a decision rather than an inconsistency.
+                icon: Icons.translate_rounded,
+                label: 'Language',
+                subtitle: languageSubtitle,
+                palette: palette,
+                onTap: () => Navigator.pop(context, _MenuAction.language),
+              ),
             _MenuTile(
               icon: Icons.home_rounded,
               label: 'Return to main',
@@ -456,6 +554,7 @@ class _MenuTile extends StatelessWidget {
     required this.label,
     required this.palette,
     required this.onTap,
+    this.subtitle,
   });
 
   final IconData icon;
@@ -463,11 +562,21 @@ class _MenuTile extends StatelessWidget {
   final ReaderPalette palette;
   final VoidCallback onTap;
 
+  /// Optional second line. `ListTile` already supports one; only the tile that
+  /// has to show an effective state passes it.
+  final String? subtitle;
+
   @override
   Widget build(BuildContext context) {
     return ListTile(
       leading: Icon(icon, color: palette.muted),
       title: Text(label, style: TextStyle(fontSize: 16, color: palette.text)),
+      subtitle: subtitle == null
+          ? null
+          : Text(
+              subtitle!,
+              style: TextStyle(fontSize: 12.5, color: palette.muted),
+            ),
       onTap: onTap,
     );
   }

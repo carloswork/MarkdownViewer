@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:markdown_viewer/blocks.dart';
+import 'package:markdown_viewer/han_script.dart';
 import 'package:markdown_viewer/markdown_theme.dart';
 import 'package:markdown_widget/markdown_widget.dart';
 
@@ -46,6 +47,49 @@ const List<int> kOrderingRiskCodePoints = <int>[
   0x25FE, 0x263A, 0x2640, 0x2642, 0x2660, 0x2663, 0x2665, 0x2666, 0x2B1B,
   0x2B1C,
 ];
+
+/// The two Han families DF-031 appends, in pack-table order.
+final List<String> kHanFamilies = kHanScriptPacks
+    .map((pack) => pack.family)
+    .toList();
+
+/// The amended code-chain property (DF-031 plan.md §7.2).
+///
+/// The original assertions were `list == kCodeFontFallback` and
+/// `list.last == kEmojiFont`. Adding the Han families to the code chain breaks
+/// both, deliberately. The **protected property** is that Cascadia Mono stays
+/// primary - asserted at each call site - and that the emoji family is present
+/// and never displaced. Restated here as: the resolved code chain **begins**
+/// with the emoji family, contains it **exactly once**, and is followed **only**
+/// by Han families.
+void expectResolvedCodeChain(String label, List<String>? list) {
+  expect(list, isNotNull, reason: '$label has no fallback list');
+  expect(
+    list!.first,
+    kEmojiFont,
+    reason: '$label must begin with the emoji family, which nothing displaces',
+  );
+  expect(
+    list.where((f) => f == kEmojiFont).length,
+    1,
+    reason: '$label must list the emoji family exactly once',
+  );
+  expect(
+    list.sublist(1),
+    everyElement(isIn(kHanFamilies)),
+    reason: '$label must be followed only by Han families',
+  );
+  expect(
+    list.sublist(1).toSet(),
+    kHanFamilies.toSet(),
+    reason: '$label must carry both Han families, each exactly once',
+  );
+  expect(
+    list.length,
+    kCodeFontFallback.length + kHanFamilies.length,
+    reason: '$label must be the unchanged prefix plus the two Han families',
+  );
+}
 
 MarkdownConfig _configFor(ReaderPalette palette) => buildMarkdownConfig(
   palette: palette,
@@ -190,7 +234,14 @@ void main() {
 
         expect(style.fontFamily, kCodeFont);
         expect(style.fontFamilyFallback, contains(kEmojiFont));
-        expect(style.fontFamilyFallback!.last, kEmojiFont);
+        // AMENDED, DF-031 plan.md §7.2. This asserted `.last == kEmojiFont`.
+        // The Han families are deliberately added to the *code* chain too, so
+        // the resolved chain now ends in a Han family. The property that was
+        // being protected - Cascadia Mono primary, the emoji family present and
+        // never displaced - is asserted directly instead, and is strictly
+        // stronger than a tail check. This is an amendment with a recorded
+        // reason, not a deletion.
+        expectResolvedCodeChain('$name inline code', style.fontFamilyFallback);
       });
 
       testWidgets('$name: fenced code keeps Cascadia Mono and adds the fallback', (
@@ -200,7 +251,8 @@ void main() {
 
         expect(style.fontFamily, kCodeFont);
         expect(style.fontFamilyFallback, contains(kEmojiFont));
-        expect(style.fontFamilyFallback!.last, kEmojiFont);
+        // AMENDED, DF-031 plan.md §7.2 - see the inline-code case above.
+        expectResolvedCodeChain('$name fenced code', style.fontFamilyFallback);
       });
     }
   });
@@ -271,7 +323,7 @@ void main() {
         lists.forEach(expectProportionalOrdering);
       });
 
-      testWidgets('$name: both code fallback lists still end with the emoji family', (
+      testWidgets('$name: both resolved code chains keep the emoji family first and Han last', (
         tester,
       ) async {
         final config = _configFor(palette);
@@ -284,24 +336,13 @@ void main() {
               .fontFamilyFallback,
         };
 
-        lists.forEach((label, list) {
-          expect(list, isNotNull, reason: '$label has no fallback list');
-          expect(
-            list,
-            kCodeFontFallback,
-            reason: '$label must use the unchanged code fallback chain',
-          );
-          expect(
-            list!.last,
-            kEmojiFont,
-            reason: '$label must end with the emoji family',
-          );
-          expect(
-            list.where((f) => f == kEmojiFont).length,
-            1,
-            reason: '$label must list the emoji family exactly once',
-          );
-        });
+        // AMENDED, DF-031 plan.md §7.2. This asserted `list == kCodeFontFallback`
+        // and `list.last == kEmojiFont`. Both break deliberately once the Han
+        // families join the code chain. `kCodeFontFallback` itself is untouched
+        // and is still asserted equal to `[kEmojiFont]` above - what changed is
+        // the *resolved* chain built from it. The protected property is restated,
+        // not dropped.
+        lists.forEach(expectResolvedCodeChain);
       });
     }
   });

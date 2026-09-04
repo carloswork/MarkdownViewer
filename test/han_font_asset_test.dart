@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:markdown_viewer/han_script.dart';
 
 import 'support/opentype.dart';
 
@@ -584,33 +585,81 @@ void main() {
     // -----------------------------------------------------------------------
     // Property 11 - inventory consistency, over the declarations that exist.
     // -----------------------------------------------------------------------
-    test('CP-A declares no Han font family anywhere in the application', () {
-      // CP-A is asset generation and provenance only. The Viewer wiring, the
-      // pubspec family declarations and the print @font-face rules belong to
-      // CP-B and CP-C. Asserting their *absence* here keeps the inventory
-      // property truthful at this checkpoint instead of inventing placeholder
-      // declarations to satisfy a future cross-inventory check. CP-B and CP-C
-      // replace this test with the positive cross-inventory assertion.
+    // REPLACED AT CP-B, as the test it replaces said it would be.
+    //
+    // The CP-A test here asserted that no Han family was declared *anywhere* -
+    // not in pubspec.yaml and not in lib/ - because at CP-A the assets were
+    // bundled and unwired, and inventing placeholder declarations to satisfy a
+    // cross-inventory check would have been dishonest. Its own comment named
+    // CP-B and CP-C as the checkpoints that "replace this test with the positive
+    // cross-inventory assertion", and CP-B cannot both wire the fonts and leave
+    // it standing. This is that replacement, and it is strictly stronger: the
+    // negative form would pass a build that declared nothing at all.
+    //
+    // Three of the five inventories property 11 names are in CP-B scope: the
+    // approved asset set, the `pubspec.yaml` `fonts:` block, and
+    // `kHanScriptPacks`. The print `@font-face` rules and `_loadPrintFonts`'
+    // load/probe inventory are CP-C, and are asserted absent here for the same
+    // reason CP-A asserted all five absent - so this property stays truthful at
+    // this checkpoint rather than anticipating work that has not happened.
+    test('the Viewer inventories agree: assets, pubspec and kHanScriptPacks', () {
       final pubspec = File('pubspec.yaml').readAsStringSync();
-      for (final font in kHanFonts) {
+
+      expect(
+        kHanScriptPacks.map((pack) => pack.family).toSet(),
+        kHanFonts.map((font) => font.family).toSet(),
+        reason:
+            'the pack table and the approved asset set must name the same two '
+            'families - a pack with no asset, or an asset with no pack, is the '
+            'drift this property exists to catch',
+      );
+
+      for (final pack in kHanScriptPacks) {
+        final font = kHanFonts.firstWhere((f) => f.family == pack.family);
+
         expect(
-          pubspec.contains(font.family),
-          isFalse,
+          pack.asset,
+          font.asset,
+          reason: '${pack.family} must point at the pinned asset path',
+        );
+        expect(
+          File(pack.asset).existsSync(),
+          isTrue,
+          reason: '${pack.asset} must exist at the path the pack declares',
+        );
+        expect(
+          pubspec.contains('family: ${pack.family}'),
+          isTrue,
+          reason: '${pack.family} must be declared in the pubspec fonts: block',
+        );
+        expect(
+          pubspec.contains('asset: ${pack.asset}'),
+          isTrue,
           reason:
-              '${font.family} must not be declared in pubspec.yaml at CP-A - '
-              'the assets are bundled and unused until CP-B wires them',
+              '${pack.asset} must be the asset pubspec registers for '
+              '${pack.family} - the pack table and the manifest must not drift',
         );
       }
-      for (final entity in Directory('lib').listSync(recursive: true)) {
-        if (entity is! File || !entity.path.endsWith('.dart')) continue;
-        final source = entity.readAsStringSync();
-        for (final font in kHanFonts) {
-          expect(
-            source.contains(font.family),
-            isFalse,
-            reason: '${entity.path} must not reference ${font.family} at CP-A',
-          );
-        }
+    });
+
+    test('CP-B declares no print @font-face inventory yet', () {
+      // Print parity is CP-C. Asserting the absence keeps property 11 truthful
+      // at this checkpoint; CP-C replaces this with the print half of the
+      // cross-inventory assertion, exactly as CP-B replaced CP-A's.
+      final printSurface = File('lib/print_surface_web.dart').readAsStringSync();
+      for (final pack in kHanScriptPacks) {
+        expect(
+          printSurface.contains(pack.printFamily),
+          isFalse,
+          reason:
+              '${pack.printFamily} is the print @font-face family and belongs '
+              'to CP-C, not CP-B',
+        );
+        expect(
+          printSurface.contains(pack.family),
+          isFalse,
+          reason: 'the Viewer family ${pack.family} is not a print declaration',
+        );
       }
     });
 

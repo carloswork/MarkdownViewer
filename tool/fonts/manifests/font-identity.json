@@ -8,6 +8,15 @@
  ],
  "baseline_union": 3048,
  "checkpoint": "CP-A",
+ "detection_tables": {
+  "file": "lib/han_script_tables.dart",
+  "hans_exclusive": 3379,
+  "hans_exclusive_ranges": 1895,
+  "hant_exclusive": 2105,
+  "hant_exclusive_ranges": 1722,
+  "union": 9199,
+  "union_ranges": 4534
+ },
  "faces": {
   "hans": {
    "asset": "fonts/SaudoHans-Regular.otf",

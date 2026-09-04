@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'file_loader.dart';
+import 'han_script.dart';
 import 'home_screen.dart';
 import 'markdown_theme.dart';
 import 'models.dart';
@@ -54,6 +55,24 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   void _onSettingsChanged(Settings settings) {
     setState(() => _settings = settings);
     store.saveSettings(settings);
+  }
+
+  /// Persists the document's script preference and re-renders in place.
+  ///
+  /// `updatedAt` is deliberately **not** passed. The reader is keyed on
+  /// `id:updatedAt` below, so bumping it would remount the reader and throw the
+  /// user back to their restored scroll position on what is only a presentation
+  /// change (plan.md §5.5 fact 4, §5.7.2). Changing the language is a re-render,
+  /// not a reload: nothing here reloads the page, re-reads the document from the
+  /// store, or re-pushes a route.
+  Future<void> _setScriptPreference(DocumentScriptPreference next) async {
+    final current = _document;
+    if (current == null || current.scriptPreference == next) return;
+
+    final updated = current.copyWith(scriptPreference: next);
+    await store.saveDocument(updated);
+    if (!mounted) return;
+    setState(() => _document = updated);
   }
 
   // --- Navigation -----------------------------------------------------------
@@ -183,6 +202,10 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
     setState(() => _document = updated);
   }
 
+  /// The resolved Han lead for the app theme, or the declared default when
+  /// there is no document at all.
+  HanScript get _resolvedScript => resolveHanScriptForDocument(_document);
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -193,8 +216,13 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
         AppearanceMode.light => ThemeMode.light,
         AppearanceMode.dark => ThemeMode.dark,
       },
-      theme: buildAppTheme(ReaderPalette.light),
-      darkTheme: buildAppTheme(ReaderPalette.dark),
+      // These run above the `home:` builder that reads `_document`, but
+      // `_document` is a State field and is in scope here, so the resolved
+      // script threads straight in. It is nullable - the home screen has no
+      // document - and that path resolves to the declared §5.4.3 default rather
+      // than to an accident (plan.md §5.5 fact 1).
+      theme: buildAppTheme(ReaderPalette.light, script: _resolvedScript),
+      darkTheme: buildAppTheme(ReaderPalette.dark, script: _resolvedScript),
       home: Builder(
         builder: (context) {
           final document = _document;
@@ -222,6 +250,7 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
             document: document,
             settings: _settings,
             onSettingsChanged: _onSettingsChanged,
+            onScriptPreferenceChanged: _setScriptPreference,
             onEdit: () => _editDocument(context),
             // The same workflow Home uses - picker, validation, replacement
             // confirmation and error handling all live in _loadFromFile.

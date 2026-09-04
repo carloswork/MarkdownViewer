@@ -1,8 +1,12 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:markdown_viewer/file_loader.dart';
+import 'package:markdown_viewer/han_script.dart';
 import 'package:markdown_viewer/home_screen.dart';
 import 'package:markdown_viewer/main.dart';
+import 'package:markdown_viewer/markdown_theme.dart';
 import 'package:markdown_viewer/models.dart';
 import 'package:markdown_viewer/reader_screen.dart';
 
@@ -21,6 +25,21 @@ void main() {
   Future<void> settle(WidgetTester tester) async {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
+  }
+
+  /// A viewport tall enough to show the whole reader menu at once.
+  ///
+  /// The real app theme sets `showDragHandle: true`, and a document with a
+  /// table of contents fills the sheet with six tiles plus a handle. On the
+  /// 800x600 default that is taller than a modal sheet is allowed to be, and
+  /// `Language` - the second-to-last tile - sits below the fold. That is
+  /// exactly the case `_ReaderMenu`'s `SingleChildScrollView` exists for, so it
+  /// is correct app behaviour; widening the viewport keeps these tests about
+  /// the menu and the re-render rather than about scrolling a sheet.
+  void useTallViewport(WidgetTester tester) {
+    tester.view.physicalSize = const Size(1000, 2000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
   }
 
   group('home screen', () {
@@ -166,6 +185,7 @@ void main() {
             document: document,
             settings: const Settings(),
             onSettingsChanged: (_) {},
+            onScriptPreferenceChanged: (_) {},
             onEdit: () {},
             onLoadFile: onLoadFile ?? () {},
             onReturnHome: onReturnHome ?? () {},
@@ -539,4 +559,572 @@ void main() {
       }
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // DF-031 CP-B — the `Language` tile, its sheet, and the menu order.
+  // ---------------------------------------------------------------------------
+  group('reader menu language tile', () {
+    Future<void> openMenu(
+      WidgetTester tester,
+      MarkdownDocument document, {
+      ValueChanged<DocumentScriptPreference>? onScriptPreferenceChanged,
+    }) async {
+      useTallViewport(tester);
+      await tester.pumpWidget(
+        host(
+          ReaderScreen(
+            document: document,
+            settings: const Settings(),
+            onSettingsChanged: (_) {},
+            onScriptPreferenceChanged: onScriptPreferenceChanged ?? (_) {},
+            onEdit: () {},
+            onLoadFile: () {},
+            onReturnHome: () {},
+          ),
+        ),
+      );
+      await settle(tester);
+      await tester.tap(find.byIcon(Icons.more_horiz_rounded));
+      await settle(tester);
+    }
+
+    testWidgets('is labelled Language, not Script rendering', (tester) async {
+      await openMenu(tester, _traditionalDocument());
+
+      expect(find.text('Language'), findsOneWidget);
+      expect(find.text('Script rendering'), findsNothing);
+      expect(find.text('Chinese rendering'), findsNothing);
+    });
+
+    testWidgets('is present for a document containing shipped Han', (
+      tester,
+    ) async {
+      await openMenu(tester, _traditionalDocument());
+      expect(find.text('Language'), findsOneWidget);
+    });
+
+    testWidgets('is absent for an English-only document', (tester) async {
+      await openMenu(tester, MarkdownDocument.fromSource(_kEnglishSource));
+
+      expect(find.text('Language'), findsNothing);
+      // And the rest of the menu looks exactly as it did before DF-031.
+      expect(find.text('Appearance'), findsOneWidget);
+      expect(find.text('Edit local copy'), findsOneWidget);
+      expect(find.text('Load from file'), findsOneWidget);
+      expect(find.text('Return to main'), findsOneWidget);
+    });
+
+    testWidgets('is absent when the only Han lies outside both repertoires', (
+      tester,
+    ) async {
+      // R15: the control is absent in the one case a confused user might go
+      // looking for it. Correct in effect - the preference cannot fix tofu -
+      // and recorded rather than hidden.
+      await openMenu(
+        tester,
+        MarkdownDocument.fromSource(
+          '# Doc\n\n${String.fromCharCodes(<int>[0x4E0F, 0x4E2E, 0x4E31])}',
+        ),
+      );
+      expect(find.text('Language'), findsNothing);
+    });
+
+    testWidgets('subtitle reads Automatic — Traditional Chinese under auto', (
+      tester,
+    ) async {
+      await openMenu(tester, _traditionalDocument());
+
+      expect(find.text('Automatic — Traditional Chinese'), findsOneWidget);
+      expect(
+        find.text('Traditional Chinese'),
+        findsNothing,
+        reason: 'an inferred convention must not read as a chosen one',
+      );
+    });
+
+    testWidgets('subtitle reads Automatic — Simplified Chinese under auto', (
+      tester,
+    ) async {
+      await openMenu(tester, _simplifiedDocument());
+
+      expect(find.text('Automatic — Simplified Chinese'), findsOneWidget);
+      expect(find.text('Simplified Chinese'), findsNothing);
+    });
+
+    testWidgets('subtitle reads the bare label under an explicit selection', (
+      tester,
+    ) async {
+      await openMenu(
+        tester,
+        _traditionalDocument(
+          preference: DocumentScriptPreference.simplifiedChinese,
+        ),
+      );
+
+      expect(find.text('Simplified Chinese'), findsOneWidget);
+      expect(find.text('Automatic — Simplified Chinese'), findsNothing);
+      expect(find.text('Automatic — Traditional Chinese'), findsNothing);
+    });
+
+    // -------------------------------------------------------------------------
+    // Menu order, asserted explicitly. §1.7 UX-3 is a product constraint, and
+    // nothing else in the suite would catch a later reordering.
+    // -------------------------------------------------------------------------
+    void expectMenuOrder(WidgetTester tester, {required bool hasToc}) {
+      double y(String label) => tester.getTopLeft(find.text(label)).dy;
+
+      if (hasToc) {
+        expect(find.text('Contents'), findsOneWidget);
+        expect(y('Contents'), lessThan(y('Appearance')));
+      } else {
+        expect(find.text('Contents'), findsNothing);
+      }
+      expect(y('Appearance'), lessThan(y('Edit local copy')));
+      expect(y('Edit local copy'), lessThan(y('Load from file')));
+      // The insertion point: after the high-frequency Load from file...
+      expect(
+        y('Load from file'),
+        lessThan(y('Language')),
+        reason: 'Language must not push Load from file down the menu (UX-3)',
+      );
+      // ...and before the terminal navigation action, which stays last.
+      expect(
+        y('Language'),
+        lessThan(y('Return to main')),
+        reason: 'Return to main is terminal navigation and remains last',
+      );
+    }
+
+    testWidgets('order is Contents, Appearance, Edit, Load, Language, Return '
+        'when the document has a table of contents', (tester) async {
+      await openMenu(tester, _traditionalDocument(withHeadings: true));
+
+      expectMenuOrder(tester, hasToc: true);
+    });
+
+    testWidgets('order is Appearance, Edit, Load, Language, Return when the '
+        'document has no table of contents', (tester) async {
+      await openMenu(tester, MarkdownDocument.fromSource(_kTraditionalSample));
+
+      expectMenuOrder(tester, hasToc: false);
+    });
+
+    // -------------------------------------------------------------------------
+    // The sheet.
+    // -------------------------------------------------------------------------
+    Future<void> openSheet(
+      WidgetTester tester,
+      MarkdownDocument document, {
+      ValueChanged<DocumentScriptPreference>? onChanged,
+    }) async {
+      await openMenu(tester, document, onScriptPreferenceChanged: onChanged);
+      await tester.tap(find.text('Language'));
+      await settle(tester);
+    }
+
+    testWidgets('offers exactly Auto, Traditional Chinese and Simplified '
+        'Chinese', (tester) async {
+      await openSheet(tester, _traditionalDocument());
+
+      expect(
+        find.byType(RadioListTile<DocumentScriptPreference>),
+        findsNWidgets(3),
+      );
+      expect(find.text('Auto'), findsOneWidget);
+      expect(find.text('Traditional Chinese'), findsOneWidget);
+      expect(find.text('Simplified Chinese'), findsOneWidget);
+    });
+
+    testWidgets('shows the current selection and the detected result under '
+        'Auto', (tester) async {
+      await openSheet(tester, _traditionalDocument());
+
+      List<RadioListTile<DocumentScriptPreference>> rows() => tester
+          .widgetList<RadioListTile<DocumentScriptPreference>>(
+            find.byType(RadioListTile<DocumentScriptPreference>),
+          )
+          .toList();
+
+      final group = tester.widget<RadioGroup<DocumentScriptPreference>>(
+        find.byType(RadioGroup<DocumentScriptPreference>),
+      );
+      expect(group.groupValue, DocumentScriptPreference.auto);
+      expect(rows().map((r) => r.value).toList(), <DocumentScriptPreference>[
+        DocumentScriptPreference.auto,
+        DocumentScriptPreference.traditionalChinese,
+        DocumentScriptPreference.simplifiedChinese,
+      ]);
+
+      expect(find.text('Detected: Traditional Chinese'), findsOneWidget);
+      // Subordinate text under Auto only - the explicit rows carry no subtitle.
+      expect(rows()[1].subtitle, isNull);
+      expect(rows()[2].subtitle, isNull);
+    });
+
+    testWidgets('the detected subtitle names what the detector returns for '
+        'this document', (tester) async {
+      await openSheet(tester, _simplifiedDocument());
+      expect(find.text('Detected: Simplified Chinese'), findsOneWidget);
+      expect(find.text('Detected: Traditional Chinese'), findsNothing);
+    });
+
+    testWidgets('an explicit preference is shown as the current selection', (
+      tester,
+    ) async {
+      await openSheet(
+        tester,
+        _traditionalDocument(
+          preference: DocumentScriptPreference.simplifiedChinese,
+        ),
+      );
+
+      final group = tester.widget<RadioGroup<DocumentScriptPreference>>(
+        find.byType(RadioGroup<DocumentScriptPreference>),
+      );
+      expect(group.groupValue, DocumentScriptPreference.simplifiedChinese);
+      // Auto still names the detector's answer, not the override.
+      expect(find.text('Detected: Traditional Chinese'), findsOneWidget);
+    });
+
+    testWidgets('selecting a value fires the callback, live, with no OK step', (
+      tester,
+    ) async {
+      final fired = <DocumentScriptPreference>[];
+      await openSheet(tester, _traditionalDocument(), onChanged: fired.add);
+
+      expect(find.text('OK'), findsNothing);
+      expect(find.text('Cancel'), findsNothing);
+      expect(find.text('Save'), findsNothing);
+
+      await tester.tap(find.text('Simplified Chinese'));
+      await settle(tester);
+
+      expect(fired, <DocumentScriptPreference>[
+        DocumentScriptPreference.simplifiedChinese,
+      ]);
+    });
+
+    testWidgets('selecting Auto restores detection', (tester) async {
+      final fired = <DocumentScriptPreference>[];
+      await openSheet(
+        tester,
+        _traditionalDocument(
+          preference: DocumentScriptPreference.simplifiedChinese,
+        ),
+        onChanged: fired.add,
+      );
+
+      await tester.tap(find.text('Auto'));
+      await settle(tester);
+
+      expect(fired, <DocumentScriptPreference>[DocumentScriptPreference.auto]);
+      // There is no separate reset affordance: Auto is a first-class,
+      // visibly-selected state rather than an absence of choice.
+      expect(find.text('Reset'), findsNothing);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // §5.6.6 — changing the language is a re-render, not a reload.
+  // ---------------------------------------------------------------------------
+  group('changing the language re-renders in place', () {
+    testWidgets('the reader is not remounted, updatedAt is unchanged, and the '
+        'rendered chain does change', (tester) async {
+      useTallViewport(tester);
+      await tester.pumpWidget(const _PreferenceHost());
+      await settle(tester);
+
+      final hostState = tester.state<_PreferenceHostState>(
+        find.byType(_PreferenceHost),
+      );
+      final documentBefore = hostState.document;
+      final readerStateBefore = tester.state(find.byType(ReaderScreen));
+      final keyBefore = tester
+          .widget<ReaderScreen>(find.byType(ReaderScreen))
+          .key;
+
+      // The rendered chain, read off the fenced-code block the document carries.
+      List<String>? renderedCodeChain() => tester
+          .widget<Text>(find.text(_kCodeMarker))
+          .style
+          ?.fontFamilyFallback;
+
+      expect(renderedCodeChain(), codeFontFallbackFor(HanScript.hant));
+
+      // Drive the real control, exactly as a user would.
+      await tester.tap(find.byIcon(Icons.more_horiz_rounded));
+      await settle(tester);
+      await tester.tap(find.text('Language'));
+      await settle(tester);
+      await tester.tap(find.text('Simplified Chinese'));
+      await settle(tester);
+
+      final documentAfter = hostState.document;
+
+      // 1. The preference was applied and persisted through the write path.
+      expect(
+        documentAfter.scriptPreference,
+        DocumentScriptPreference.simplifiedChinese,
+      );
+
+      // 2. `updatedAt` is unchanged - the trap §5.6.6 names explicitly.
+      expect(documentAfter.updatedAt, documentBefore.updatedAt);
+      expect(documentAfter.id, documentBefore.id);
+
+      // 3. ReaderScreen is NOT remounted. The same State instance and an
+      //    unchanged ValueKey are what actually preserve the reading position,
+      //    and they are checkable here where a pixel offset is not.
+      expect(
+        tester.state(find.byType(ReaderScreen)),
+        same(readerStateBefore),
+        reason:
+            'a new State instance means the reader was remounted and the '
+            'reading position was thrown away',
+      );
+      expect(
+        tester.widget<ReaderScreen>(find.byType(ReaderScreen)).key,
+        keyBefore,
+      );
+
+      // 4. The rendered chain DID change, so `_blocksKey` was demonstrably
+      //    rebuilt - §5.5 fact 2. Without the resolved script in that key this
+      //    assertion fails while everything else still passes, which is exactly
+      //    the silent wrongness the plan warns about.
+      expect(renderedCodeChain(), codeFontFallbackFor(HanScript.hans));
+      expect(renderedCodeChain(), isNot(codeFontFallbackFor(HanScript.hant)));
+
+      // 5. Nothing was reloaded or re-pushed: one route, one save, no re-read.
+      expect(hostState.saves, 1);
+      expect(hostState.reloads, 0);
+      expect(find.byType(ReaderScreen), findsOneWidget);
+    });
+
+    testWidgets('reopening the menu then shows the explicit state', (
+      tester,
+    ) async {
+      useTallViewport(tester);
+      await tester.pumpWidget(const _PreferenceHost());
+      await settle(tester);
+
+      await tester.tap(find.byIcon(Icons.more_horiz_rounded));
+      await settle(tester);
+      expect(find.text('Automatic — Traditional Chinese'), findsOneWidget);
+      await tester.tap(find.text('Language'));
+      await settle(tester);
+      await tester.tap(find.text('Traditional Chinese'));
+      await settle(tester);
+      // Close the sheet.
+      await tester.tapAt(const Offset(400, 20));
+      await settle(tester);
+
+      await tester.tap(find.byIcon(Icons.more_horiz_rounded));
+      await settle(tester);
+
+      expect(find.text('Traditional Chinese'), findsOneWidget);
+      expect(find.text('Automatic — Traditional Chinese'), findsNothing);
+    });
+
+    testWidgets('selecting Auto again clears the override and detection '
+        'resumes', (tester) async {
+      useTallViewport(tester);
+      await tester.pumpWidget(
+        const _PreferenceHost(
+          preference: DocumentScriptPreference.simplifiedChinese,
+        ),
+      );
+      await settle(tester);
+
+      final hostState = tester.state<_PreferenceHostState>(
+        find.byType(_PreferenceHost),
+      );
+
+      await tester.tap(find.byIcon(Icons.more_horiz_rounded));
+      await settle(tester);
+      await tester.tap(find.text('Language'));
+      await settle(tester);
+      await tester.tap(find.text('Auto'));
+      await settle(tester);
+
+      expect(
+        hostState.document.scriptPreference,
+        DocumentScriptPreference.auto,
+      );
+      // Detection resumed against the effective source, which is unambiguously
+      // Traditional - so the assertion has a determinate expected value rather
+      // than being vacuously satisfied by the §5.4.3 default.
+      expect(resolveHanScriptForDocument(hostState.document), HanScript.hant);
+      expect(
+        tester.widget<Text>(find.text(_kCodeMarker)).style?.fontFamilyFallback,
+        codeFontFallbackFor(HanScript.hant),
+      );
+    });
+
+    test('didUpdateWidget compares the preference (§5.5 fact 3)', () {
+      // Stated honestly: at CP-B this cannot be asserted behaviourally.
+      // `mountPrintSurface` still takes only the source, so remounting on a
+      // preference change produces an identical print surface and no widget
+      // test can tell the comparison from its absence. Threading the resolved
+      // script into that signature is CP-C, and until then the comparison would
+      // be silently deletable. This pins it structurally so it survives to CP-C,
+      // where it becomes load-bearing: without it, print would keep the previous
+      // resolved chain while the Viewer showed the new one.
+      final reader = _readNormalised('lib/reader_screen.dart');
+      final start = reader.indexOf('void didUpdateWidget');
+      expect(start, greaterThan(-1));
+      final body = reader.substring(start, reader.indexOf('\n  }\n', start));
+
+      for (final field in <String>[
+        'document.id',
+        'document.updatedAt',
+        'document.source',
+        'document.scriptPreference',
+      ]) {
+        expect(
+          body.contains(field),
+          isTrue,
+          reason:
+              'didUpdateWidget must compare $field before remounting the '
+              'print surface',
+        );
+      }
+      expect(body, contains('mountPrintSurface'));
+      expect(
+        body,
+        contains('CP-C'),
+        reason: 'the deferred print-side work must stay signposted',
+      );
+    });
+
+    test('the write path reloads nothing, re-reads nothing and re-pushes '
+        'nothing', () {
+      // §5.6.6 lists five prohibited ways to satisfy the acceptance criteria.
+      // The State-identity assertion above rules out a remount behaviourally;
+      // this rules out the rest structurally, because a later edit could
+      // introduce one and no widget test would necessarily notice.
+      final main = _readNormalised('lib/main.dart');
+      final start = main.indexOf('Future<void> _setScriptPreference');
+      expect(start, greaterThan(-1), reason: 'the write path must exist');
+      // Bounded to the method body: the first line that closes at method
+      // indentation. A looser bound would swallow the rest of the class and
+      // make every negative assertion below meaningless.
+      final writePath = main.substring(
+        start,
+        main.indexOf('\n  }\n', start) + 4,
+      );
+
+      expect(writePath, contains('copyWith(scriptPreference:'));
+      expect(writePath, contains('store.saveDocument'));
+      expect(writePath, contains('setState'));
+      expect(
+        writePath,
+        isNot(contains('updatedAt')),
+        reason: 'bumping updatedAt would remount the reader (§5.5 fact 4)',
+      );
+      expect(writePath, isNot(contains('loadDocument')));
+      expect(writePath, isNot(contains('Navigator')));
+      expect(writePath, isNot(contains('reload')));
+
+      for (final path in <String>[
+        'lib/main.dart',
+        'lib/reader_screen.dart',
+        'lib/script_rendering_sheet.dart',
+      ]) {
+        final source = _readNormalised(path);
+        expect(
+          source.contains('location.reload'),
+          isFalse,
+          reason: '$path must never reload the page',
+        );
+      }
+    });
+  });
+}
+
+/// Reads a source file with line endings normalised.
+///
+/// The structural assertions below match on multi-line shapes, and the repo has
+/// a mix of LF and CRLF files - a CRLF file would silently fail to match and the
+/// assertion would look like a code defect rather than a test one.
+String _readNormalised(String path) =>
+    File(path).readAsStringSync().replaceAll('\r\n', '\n');
+
+// --- DF-031 CP-B fixtures -----------------------------------------------------
+
+/// Traditional-exclusive throughout; `test/han_script_test.dart` proves the
+/// membership these fixtures depend on.
+const String _kTraditionalSample = '說編輯設與錯誤處請閱讀單';
+const String _kSimplifiedSample = '说编辑设与错误处请阅读单';
+const String _kEnglishSource = '# Release notes\n\nAll checks passed.';
+const String _kCodeMarker = 'code_chain_probe';
+
+MarkdownDocument _traditionalDocument({
+  DocumentScriptPreference preference = DocumentScriptPreference.auto,
+  bool withHeadings = false,
+}) {
+  final source = withHeadings
+      ? '# 報告\n\n$_kTraditionalSample\n\n## 附錄\n\nmore'
+      : '# 報告\n\n$_kTraditionalSample';
+  return MarkdownDocument.fromSource(
+    source,
+  ).copyWith(scriptPreference: preference);
+}
+
+MarkdownDocument _simplifiedDocument({
+  DocumentScriptPreference preference = DocumentScriptPreference.auto,
+}) {
+  return MarkdownDocument.fromSource(
+    '# 报告\n\n$_kSimplifiedSample',
+  ).copyWith(scriptPreference: preference);
+}
+
+/// A stateful host that mirrors `main.dart`'s reader wiring exactly: the same
+/// `ValueKey`, the same `copyWith` that does not touch `updatedAt`, and a
+/// `setState` in place of a route change. Anything the real app does that would
+/// remount the reader would remount it here too.
+class _PreferenceHost extends StatefulWidget {
+  const _PreferenceHost({this.preference = DocumentScriptPreference.auto});
+
+  final DocumentScriptPreference preference;
+
+  @override
+  State<_PreferenceHost> createState() => _PreferenceHostState();
+}
+
+class _PreferenceHostState extends State<_PreferenceHost> {
+  late MarkdownDocument document = MarkdownDocument.fromSource(
+    '# 報告\n\n$_kTraditionalSample\n\n```\n$_kCodeMarker\n```\n',
+  ).copyWith(scriptPreference: widget.preference);
+
+  /// How many times the write path ran.
+  int saves = 0;
+
+  /// How many times anything re-read the document. Nothing should.
+  int reloads = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      theme: buildAppTheme(
+        ReaderPalette.light,
+        script: resolveHanScriptForDocument(document),
+      ),
+      home: ReaderScreen(
+        key: ValueKey(
+          '${document.id}:${document.updatedAt.microsecondsSinceEpoch}',
+        ),
+        document: document,
+        settings: const Settings(),
+        onSettingsChanged: (_) {},
+        onScriptPreferenceChanged: (next) {
+          saves++;
+          // The real write path, minus the store call: copyWith without
+          // updatedAt, then setState.
+          setState(() => document = document.copyWith(scriptPreference: next));
+        },
+        onEdit: () {},
+        onLoadFile: () {},
+        onReturnHome: () {},
+      ),
+    );
+  }
 }

@@ -82,3 +82,21 @@ flutter:
     - family: TwemojiMozilla
       fonts:
         - asset: fonts/TwemojiMozilla.ttf
+
+    # DF-031. Two reduced-repertoire Chinese derivatives, generated and pinned by
+    # tool/fonts/build_han_subsets.py. Fallback-only families: neither is ever a
+    # primary TextStyle.fontFamily, and both are appended after the existing
+    # prefix so Roboto stays primary in prose and Cascadia Mono in code. Their
+    # repertoires are disjoint from the five baseline faces, so they cannot
+    # displace any code point those already cover.
+    #
+    # Both are declared, and both sit in every chain, whichever one leads: that
+    # is what makes the document-level preference cost regional typographic
+    # convention rather than coverage. Each ships its licence and derivation
+    # notice beside it in fonts/.
+    - family: SaudoHans
+      fonts:
+        - asset: fonts/SaudoHans-Regular.otf
+    - family: SaudoHant
+      fonts:
+        - asset: fonts/SaudoHant-Regular.otf

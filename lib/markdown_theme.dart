@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:markdown_widget/markdown_widget.dart';
 
 import 'blocks.dart';
+import 'han_script.dart';
 
 /// Reading colours. Kept separate from [ThemeData] because the Markdown configs
 /// need concrete colours at build time, not a resolved widget theme.
@@ -144,7 +145,44 @@ const List<String> kBodyFontFallback = <String>[kEmojiFont, kCodeFont];
 /// Fallback chain for user-authored code text. Cascadia Mono stays primary.
 const List<String> kCodeFontFallback = <String>[kEmojiFont];
 
-ThemeData buildAppTheme(ReaderPalette palette) {
+/// Proportional fallback chain for a resolved script (DF-031, plan.md §5.4).
+///
+/// The existing prefix is unchanged and the Han families are **appended** after
+/// it, resolved lead first: `[TwemojiMozilla, CascadiaMono, lead, other]`.
+/// Roboto stays the primary proportional family and the DF-023/DF-024 rule -
+/// the emoji family strictly ahead of the code family - is preserved untouched,
+/// which is why [kBodyFontFallback] is retained as a `const` prefix rather than
+/// rewritten.
+///
+/// Both packs are always present. Because they are disjoint from the bundled
+/// union (plan.md §3.5) their position cannot affect any existing code point;
+/// placing them last is defence in depth.
+List<String> bodyFontFallbackFor(HanScript lead) => <String>[
+  ...kBodyFontFallback,
+  ...hanFamiliesFor(lead),
+];
+
+/// Code fallback chain for a resolved script.
+///
+/// `[TwemojiMozilla, lead, other]`. Cascadia Mono stays primary in every code
+/// style, so it is not repeated here. Including the Han families in the *code*
+/// chain is deliberate: the same character rendering in prose but as tofu inside
+/// a code span would be incoherent, and it costs zero additional bytes because
+/// the families are already registered (plan.md §7.2).
+List<String> codeFontFallbackFor(HanScript lead) => <String>[
+  ...kCodeFontFallback,
+  ...hanFamiliesFor(lead),
+];
+
+/// [script] is the document's resolved Han lead. It defaults to the declared
+/// §5.4.3 default so the no-document path - the home screen, where the app's
+/// theme is still built - resolves deterministically rather than by accident.
+ThemeData buildAppTheme(
+  ReaderPalette palette, {
+  HanScript script = kDefaultHanScript,
+}) {
+  final bodyFallback = bodyFontFallbackFor(script);
+
   final scheme = ColorScheme.fromSeed(
     seedColor: palette.link,
     brightness: palette.isDark ? Brightness.dark : Brightness.light,
@@ -154,7 +192,7 @@ ThemeData buildAppTheme(ReaderPalette palette) {
   return ThemeData(
     useMaterial3: true,
     fontFamily: kBodyFont,
-    fontFamilyFallback: kBodyFontFallback,
+    fontFamilyFallback: bodyFallback,
     brightness: palette.isDark ? Brightness.dark : Brightness.light,
     colorScheme: scheme,
     scaffoldBackgroundColor: palette.background,
@@ -183,16 +221,24 @@ ThemeData buildAppTheme(ReaderPalette palette) {
 /// Everything the renderer might otherwise do over the network is overridden
 /// here: images become local placeholders, and links are handed to a callback
 /// rather than opened by the package.
+/// [script] is the document's resolved Han lead (plan.md §5.4). It is a
+/// parameter rather than global state because both this function and
+/// [buildAppTheme] are already rebuilt from state on every change, so the
+/// resolved chain threads through the existing call sites unchanged.
 MarkdownConfig buildMarkdownConfig({
   required ReaderPalette palette,
   required bool wrapCode,
   required void Function(String url) onLinkTap,
+  HanScript script = kDefaultHanScript,
 }) {
+  final bodyFallback = bodyFontFallbackFor(script);
+  final codeFallback = codeFontFallbackFor(script);
+
   final body = TextStyle(
     fontSize: kBodyFontSize,
     height: kBodyLineHeight,
     color: palette.text,
-    fontFamilyFallback: kBodyFontFallback,
+    fontFamilyFallback: bodyFallback,
   );
 
   HeadingDivider divider() => HeadingDivider(color: palette.rule, height: 1);
@@ -206,7 +252,7 @@ MarkdownConfig buildMarkdownConfig({
           height: 1.25,
           fontWeight: FontWeight.w700,
           color: palette.text,
-          fontFamilyFallback: kBodyFontFallback,
+          fontFamilyFallback: bodyFallback,
         ),
         padding: const EdgeInsets.only(top: 24, bottom: 6),
         divider: divider(),
@@ -218,7 +264,7 @@ MarkdownConfig buildMarkdownConfig({
           height: 1.3,
           fontWeight: FontWeight.w700,
           color: palette.text,
-          fontFamilyFallback: kBodyFontFallback,
+          fontFamilyFallback: bodyFallback,
         ),
         padding: const EdgeInsets.only(top: 22, bottom: 4),
         divider: divider(),
@@ -230,7 +276,7 @@ MarkdownConfig buildMarkdownConfig({
           height: 1.35,
           fontWeight: FontWeight.w700,
           color: palette.text,
-          fontFamilyFallback: kBodyFontFallback,
+          fontFamilyFallback: bodyFallback,
         ),
         padding: const EdgeInsets.only(top: 18, bottom: 2),
       ),
@@ -241,7 +287,7 @@ MarkdownConfig buildMarkdownConfig({
           height: 1.4,
           fontWeight: FontWeight.w700,
           color: palette.text,
-          fontFamilyFallback: kBodyFontFallback,
+          fontFamilyFallback: bodyFallback,
         ),
         padding: const EdgeInsets.only(top: 14, bottom: 2),
       ),
@@ -252,7 +298,7 @@ MarkdownConfig buildMarkdownConfig({
           height: 1.4,
           fontWeight: FontWeight.w700,
           color: palette.muted,
-          fontFamilyFallback: kBodyFontFallback,
+          fontFamilyFallback: bodyFallback,
         ),
         padding: const EdgeInsets.only(top: 12, bottom: 2),
       ),
@@ -263,7 +309,7 @@ MarkdownConfig buildMarkdownConfig({
           height: 1.4,
           fontWeight: FontWeight.w700,
           color: palette.muted,
-          fontFamilyFallback: kBodyFontFallback,
+          fontFamilyFallback: bodyFallback,
         ),
         padding: const EdgeInsets.only(top: 10, bottom: 2),
       ),
@@ -275,7 +321,7 @@ MarkdownConfig buildMarkdownConfig({
           color: palette.link,
           decoration: TextDecoration.underline,
           decorationColor: palette.link.withValues(alpha: 0.5),
-          fontFamilyFallback: kBodyFontFallback,
+          fontFamilyFallback: bodyFallback,
         ),
         onTap: onLinkTap,
       ),
@@ -289,7 +335,7 @@ MarkdownConfig buildMarkdownConfig({
               ? const Color(0xFFE6C07B)
               : const Color(0xFFB3261E),
           backgroundColor: palette.codeBackground,
-          fontFamilyFallback: kCodeFontFallback,
+          fontFamilyFallback: codeFallback,
         ),
       ),
       // Fenced code. `builder` replaces the package's block entirely so that
@@ -300,6 +346,7 @@ MarkdownConfig buildMarkdownConfig({
           language: language,
           palette: palette,
           wrap: wrapCode,
+          script: script,
         ),
       ),
       BlockquoteConfig(
@@ -320,13 +367,13 @@ MarkdownConfig buildMarkdownConfig({
           height: 1.35,
           fontWeight: FontWeight.w700,
           color: palette.text,
-          fontFamilyFallback: kBodyFontFallback,
+          fontFamilyFallback: bodyFallback,
         ),
         bodyStyle: TextStyle(
           fontSize: kBodyFontSize - 2,
           height: 1.35,
           color: palette.text,
-          fontFamilyFallback: kBodyFontFallback,
+          fontFamilyFallback: bodyFallback,
         ),
         headPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
         bodyPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
