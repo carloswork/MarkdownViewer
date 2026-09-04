@@ -1,0 +1,12 @@
+# DF-031 CP-A — pinned generation environment for tool/fonts/build_han_subsets.py.
+#
+# This is a regeneration environment, not an application dependency. Nothing in
+# lib/ or test/ imports it and tool/build_web.ps1 does not invoke it.
+#
+# Pinned because font subsetting output is tool-version sensitive: the shipped
+# binaries' SHA-256 are asserted by test/font_fallback_test.dart, and a
+# different fontTools version can legitimately produce different bytes for the
+# same repertoire (DF-031 plan.md §13 R8).
+#
+# Python 3.12.0
+fonttools==4.64.0

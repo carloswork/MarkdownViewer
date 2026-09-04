@@ -1,0 +1,59 @@
+SaudoHans — derivation and provenance notice
+
+This font is a DERIVATIVE. It is a reduced-repertoire subset of an upstream
+font, with its own identity records, and it is not the upstream font.
+
+Upstream project        : notofonts/noto-cjk
+Upstream release / tag  : Sans2.004
+Upstream pinned commit  : 523d033d6cb47f4a80c58a35753646f5c3608a78
+Upstream source path    : Sans/SubsetOTF/SC/NotoSansSC-Regular.otf
+Upstream source bytes   : 8331336
+Upstream source SHA-256 : faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9
+
+Governing licence path  : LICENSE (repository root, at the pinned commit)
+Governing licence SHA256: 6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2
+Governing licence       : SIL Open Font License 1.1
+Reserved Font Name      : RFN: none declared
+
+The governing licence declares no copyright statement, and therefore declares
+no Reserved Font Name. The phrase "Reserved Font Name" occurs in that file
+only in the OFL's own definition clause; that is not a declared RFN. The
+licence text distributed by other projects for related fonts is NOT the licence
+governing this derivative and has not been substituted for it.
+
+A byte-identical copy of the governing licence is bundled as:
+    fonts/SaudoHans-LICENSE.txt
+
+Font version            : name ID 5 retains the upstream build version 2.004
+Repertoire              : Simplified — CLDR zh main+auxiliary Han, GB 2312 Level 1 + Level 2
+Repertoire inputs       :
+    CLDR exemplars   tool/fonts/cldr/cldr-zh.xml      sha256 bc40d32d5f602bae6b5e4ab58f4983a533f3a28c14c4642afca57b095d067862
+    CLDR exemplars   tool/fonts/cldr/cldr-zh-Hant.xml sha256 e846d2247b1fb0d5aaa86e3633f2cf2784fe3266a176ab7eb0b61884c1d12e0d
+    GB 2312 and Big5 re-derived from the Python 3.12.0 stdlib codecs
+    Punctuation/fullwidth floor U+3000-303F, U+FF00-FFEF, U+FE10-FE19, U+FE30-FE4F
+    minus the union of the five baseline bundled faces (3048 code points)
+
+Generation tool         : tool/fonts/build_han_subsets.py
+fontTools version       : 4.64.0
+Python version          : 3.12.0
+Subset options          : --drop-tables+=BASE,vhea,vmtx,VORG,DSIG --layout-features=ccmp,locl,kern,mark --notdef-outline --name-IDs=* --name-legacy --glyph-names
+
+Derivative identity     :
+    name ID 1 family      SaudoHans
+    name ID 3 unique id   2.004;DF031;SaudoHans-Regular;src-faa6c9df652116dd
+    name ID 4 full name   SaudoHans
+    name ID 6 PostScript  SaudoHans-Regular
+    name IDs 0, 13 and 14 retain the upstream copyright, the OFL grant and the
+    OFL URL. IDs 2, 5, 7, 8, 9, 10, 11 and 12 are retained unchanged.
+
+Realised repertoire     : 7094 code points (manifest: tool/fonts/manifests/SaudoHans-repertoire.txt)
+Requested repertoire    : 7110 code points, 16 dropped (see tool/fonts/manifests/SaudoHans-drops.txt)
+GB 2312 Level 1 + Level 2 coverage: 6763 / 6763
+Baseline intersection   : 0 code points
+
+Output file             : fonts/SaudoHans-Regular.otf
+Output bytes            : 1764560
+Output SHA-256          : 9d2fcb44a083b4c2dfa5de7a1607e87f293798f65b6034f8e7ad027dc6bf18cb
+
+Regenerate with:
+    python tool/fonts/build_han_subsets.py --upstream <dir holding the pinned inputs>

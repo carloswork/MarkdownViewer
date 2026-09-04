@@ -41,6 +41,11 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^6.0.0
 
+  # SHA-256 for the DF-031 bundled-font identity assertions. dart:convert
+  # supplies encoders, not digests. Test-only: nothing in lib/ imports it, and
+  # it was already present transitively.
+  crypto: ^3.0.6
+
 flutter:
   uses-material-design: true
 

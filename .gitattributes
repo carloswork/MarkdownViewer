@@ -1,0 +1,24 @@
+# DF-031: byte-exact files must survive checkout unchanged.
+#
+# This repository is developed on Windows with core.autocrlf=true, which
+# rewrites LF to CRLF on checkout for anything Git treats as text. Several
+# DF-031 files are asserted by SHA-256, so that rewrite would change their bytes
+# and fail the assertions on a fresh clone even though nothing was edited:
+#
+#   fonts/*-LICENSE.txt      must stay byte-identical to the exact pinned
+#                            upstream governing LICENSE (plan.md §10.1
+#                            property 8), asserted in test/han_font_asset_test.dart
+#   tool/fonts/cldr/*.xml    pinned repertoire inputs, hash-verified by
+#                            tool/fonts/build_han_subsets.py before it generates
+#   fonts/*-NOTICE.txt       compared byte-for-byte when reproducing the build
+#   tool/fonts/manifests/*   ditto
+#
+# `-text` disables all line-ending conversion for these paths.
+fonts/*-LICENSE.txt -text
+fonts/*-NOTICE.txt -text
+tool/fonts/cldr/*.xml -text
+tool/fonts/manifests/* -text
+
+# Font binaries are never text.
+fonts/*.otf binary
+fonts/*.ttf binary

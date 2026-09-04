@@ -1,0 +1,18 @@
+# DF-031 SaudoHans — requested-minus-realised drop set, with reasons.
+# requested 7110, realised 7094, dropped 16.
+U+FF00	unassigned in Unicode
+U+FFA0	absent from NotoSansSC-Regular.otf
+U+FFBF	unassigned in Unicode
+U+FFC0	unassigned in Unicode
+U+FFC1	unassigned in Unicode
+U+FFC8	unassigned in Unicode
+U+FFC9	unassigned in Unicode
+U+FFD0	unassigned in Unicode
+U+FFD1	unassigned in Unicode
+U+FFD8	unassigned in Unicode
+U+FFD9	unassigned in Unicode
+U+FFDD	unassigned in Unicode
+U+FFDE	unassigned in Unicode
+U+FFDF	unassigned in Unicode
+U+FFE7	unassigned in Unicode
+U+FFEF	unassigned in Unicode

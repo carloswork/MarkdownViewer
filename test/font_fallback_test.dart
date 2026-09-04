@@ -433,36 +433,23 @@ void main() {
       }
     });
 
-    test('no new font binary is introduced', () {
-      // DF-024 is a zero-added-font-bytes change: it reuses a font that is
-      // already bundled rather than acquiring one. The test suite is one of the
-      // places that guardrail is enforced, so no new font path is added above
-      // and none may appear on disk.
-      const declaredFontAssets = <String>[
-        kRobotoRegularPath,
-        kRobotoItalicPath,
-        kRobotoBoldPath,
-        kCascadiaMonoPath,
-        kEmojiFontAssetPath,
-      ];
-      expect(declaredFontAssets.toSet().length, 5);
-
-      final onDisk = Directory('fonts')
-          .listSync()
-          .whereType<File>()
-          .map((entry) => entry.uri.pathSegments.last)
-          .where((name) => name.toLowerCase().endsWith('.ttf'))
-          .map((name) => 'fonts/$name')
-          .toSet();
-
-      expect(
-        onDisk,
-        declaredFontAssets.toSet(),
-        reason:
-            'fonts/ must hold exactly the font binaries already bundled at the '
-            'baseline - DF-024 adds, removes, subsets and regenerates nothing',
-      );
-    });
+    // DF-024's `no new font binary is introduced` stood here. It asserted that
+    // the `.ttf` files in `fonts/` were exactly the five baseline paths,
+    // stating "DF-024 adds, removes, subsets and regenerates nothing". That was
+    // correct for DF-024, and DF-031 breaks it deliberately: DF-031 ships two
+    // derived Han subsets.
+    //
+    // Human Authority authorized **replacing** that guardrail, never merely
+    // deleting it (DF-031 plan.md §1.5 H8, §10). Its successor is the group
+    // `DF-031 bundled Han font assets` in test/han_font_asset_test.dart, which
+    // is strictly stronger on every axis: it asserts the whole `fonts/` listing
+    // rather than one extension glob, plus pinned upstream identity, shipped
+    // digests and byte lengths, realised repertoire read from every Unicode
+    // cmap subtable, the drop set, disjointness from the baseline union,
+    // licence and notice identity, the derivative name records, and the
+    // Reserved Font Name state.
+    //
+    // The five baseline faces are still asserted present by the test above.
 
     test('the emoji licence/notice file is bundled alongside the font', () {
       expect(
