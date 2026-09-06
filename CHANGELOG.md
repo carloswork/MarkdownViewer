@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.1.0 — 2026-09-05
+
+- Added bundled local Traditional and Simplified Chinese rendering support with automatic detection and a manual Language override.
+
 ## v1.0.6 — 2026-09-03
 
 - Updated the Flutter runtime so unsupported characters no longer trigger an ongoing font-fallback retry loop. Unsupported characters may still appear as missing-glyph boxes.

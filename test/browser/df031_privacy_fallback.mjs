@@ -8,11 +8,7 @@
 //         the DF-030 finite-containment invariant still holding for residual
 //         unsupported ones.
 //
-// The fallback classifier and the five-second quiescence rule are taken
-// VERBATIM from the accepted DF-030 U-A/U-C harness
-// (Research/Releases/v1.0.6/DF-030/implementation-evidence/checkpoint-u-a/run_u_a.js
-// line 36, checkpoint-u-c/run_interleaved.js line 22) so the counts here are
-// directly comparable with the accepted DF-030 figures.
+// Carried forward unchanged from the accepted DF-030 fallback classifier and five-second quiescence rule.
 
 import { createServer } from 'node:http';
 import { createReadStream } from 'node:fs';
