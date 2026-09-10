@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'file_loader.dart';
@@ -7,21 +9,32 @@ import 'markdown_theme.dart';
 import 'models.dart';
 import 'paste_sheet.dart';
 import 'reader_screen.dart';
+import 'retention.dart';
 import 'settings_sheet.dart';
 import 'store.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Everything is loaded before the first frame so the reader opens straight
-  // into the stored document at the stored position, with the correct theme -
-  // no loading state and no flash of the wrong colour scheme.
+  // Everything is loaded before the first frame so there is no loading state and
+  // no flash of the wrong colour scheme.
   await store.init();
+
+  // DF-039: the retention boundary is resolved before the first frame, not
+  // after it. Any content stored under a preference that is missing, OFF or
+  // unreadable is removed here, so the frame that follows cannot be built from
+  // a document the user did not choose to keep.
+  final startup = await retention.resolveStartup();
 
   runApp(
     MarkdownViewerApp(
-      initialSettings: store.loadSettings(),
-      initialDocument: store.loadDocument(),
+      initialSettings: startup.settingsLoad.settings,
+      // Only read back under a confirmed ON policy. Reading it under OFF and
+      // then declining to show it would still have constructed the document in
+      // memory from off-policy data; not reading it is the containment.
+      initialDocument: startup.effectivePolicy == RetentionPolicy.on
+          ? store.loadDocument()
+          : null,
     ),
   );
 }
@@ -54,7 +67,10 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
 
   void _onSettingsChanged(Settings settings) {
     setState(() => _settings = settings);
-    store.saveSettings(settings);
+    // Appearance settings are never gated on retention policy; they describe the
+    // app, not the document. The outcome is not surfaced yet - Checkpoint 2 owns
+    // every user-facing claim - but it is no longer discarded inside the store.
+    unawaited(store.saveSettings(settings));
   }
 
   /// Persists the document's script preference and re-renders in place.
@@ -70,6 +86,8 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
     if (current == null || current.scriptPreference == next) return;
 
     final updated = current.copyWith(scriptPreference: next);
+    // Governed by the store's retention gate: under OFF this is suppressed and
+    // the preference stays in memory for the current session only.
     await store.saveDocument(updated);
     if (!mounted) return;
     setState(() => _document = updated);
@@ -114,8 +132,21 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
     return confirmed ?? false;
   }
 
+  /// Replaces the current document.
+  ///
+  /// The removal runs first and unconditionally, including under OFF, so a
+  /// replaced document's stored bytes and its stored position cannot outlive it.
+  /// It also invalidates any content write that was already requested when the
+  /// removal was issued, so an outgoing document's in-flight save cannot land
+  /// behind it.
+  ///
+  /// What stops the *new* document from inheriting the old one's position is
+  /// separate and stronger: `Store.loadPosition` returns a stored position only
+  /// when its `documentId` matches. A position write whose debounce fires after
+  /// this removal is a new request rather than a stale one, so the fence does
+  /// not cover it - the identity filter does.
   Future<void> _openDocument(MarkdownDocument document) async {
-    await store.clearDocument();
+    await store.removeRetainedContent();
     await store.saveDocument(document);
     if (!mounted) return;
     setState(() {

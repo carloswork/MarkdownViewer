@@ -286,6 +286,7 @@ class Settings {
     this.appearance = AppearanceMode.system,
     this.fontScale = 1.0,
     this.wrapCode = false,
+    this.keepForNextTime = false,
   });
 
   final AppearanceMode appearance;
@@ -297,6 +298,21 @@ class Settings {
   /// Soft-wrap long code lines instead of scrolling them horizontally.
   final bool wrapCode;
 
+  /// Whether this browser may keep the current document and reading place for a
+  /// future visit (DF-039 `Keep for next time`).
+  ///
+  /// Defaults to false and reads back as false when the field is absent, so a
+  /// settings record written by v1.1.0 - which has no such field - resolves to
+  /// OFF rather than to the retention that release performed unconditionally.
+  /// This is a cross-session content-retention choice only: it never governs
+  /// the appearance fields beside it, which persist either way.
+  final bool keepForNextTime;
+
+  /// Key name for [keepForNextTime] in the stored JSON. Named here so that the
+  /// presence check that distinguishes "absent" from "explicitly false" reads
+  /// the same key this class writes.
+  static const String keepForNextTimeKey = 'keepForNextTime';
+
   static const double minFontScale = 0.85;
   static const double maxFontScale = 1.60;
 
@@ -304,11 +320,13 @@ class Settings {
     AppearanceMode? appearance,
     double? fontScale,
     bool? wrapCode,
+    bool? keepForNextTime,
   }) {
     return Settings(
       appearance: appearance ?? this.appearance,
       fontScale: fontScale ?? this.fontScale,
       wrapCode: wrapCode ?? this.wrapCode,
+      keepForNextTime: keepForNextTime ?? this.keepForNextTime,
     );
   }
 
@@ -316,14 +334,27 @@ class Settings {
     'appearance': appearance.name,
     'fontScale': fontScale,
     'wrapCode': wrapCode,
+    keepForNextTimeKey: keepForNextTime,
   };
 
+  /// Tolerates a settings record written by any earlier build: a missing
+  /// [keepForNextTime] reads back as false, which is the default-OFF policy and
+  /// never retention the user did not choose.
+  ///
+  /// A field present but not a boolean is a different case and is deliberately
+  /// not tolerated here - the cast throws, the store catches it, and the whole
+  /// record resolves as unreadable rather than as a confident OFF. That is the
+  /// safer answer: a settings record that is not the shape this app writes is
+  /// evidence that the stored preference cannot be trusted, and `plan.md` §19.1
+  /// requires an indeterminate preference to fail safe to OFF *and* stay
+  /// reportable as uncertain, rather than being silently read as a choice.
   static Settings fromJson(Map<String, dynamic> json) {
     final scale = (json['fontScale'] as num?)?.toDouble() ?? 1.0;
     return Settings(
       appearance: _appearanceFromName(json['appearance'] as String?),
       fontScale: scale.clamp(minFontScale, maxFontScale),
       wrapCode: json['wrapCode'] as bool? ?? false,
+      keepForNextTime: json[keepForNextTimeKey] as bool? ?? false,
     );
   }
 }

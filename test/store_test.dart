@@ -1,9 +1,11 @@
 import 'dart:io';
 
 import 'package:flutter/services.dart';
+import 'package:hive_ce_flutter/hive_flutter.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:markdown_viewer/han_script.dart';
 import 'package:markdown_viewer/models.dart';
+import 'package:markdown_viewer/retention.dart';
 import 'package:markdown_viewer/store.dart';
 
 /// Exercises the real Store against a real Hive box on disk.
@@ -27,6 +29,15 @@ void main() {
         );
 
     await store.init();
+  });
+
+  setUp(() async {
+    // DF-039 gates every durable content write on effective retention policy,
+    // which defaults to OFF. These tests are about the durable round trip, so
+    // they run under ON; the gate itself is asserted separately below and in
+    // retention_test.dart.
+    store.applyResolvedPolicy(RetentionPolicy.on);
+    await store.removeRetainedContent();
   });
 
   tearDownAll(() async {
@@ -105,7 +116,7 @@ void main() {
       ),
     );
 
-    await store.clearDocument();
+    expect(await store.removeRetainedContent(), CleanupOutcome.confirmedAbsent);
 
     expect(store.loadDocument(), isNull);
     expect(store.loadPosition(document.id), isNull);
@@ -158,8 +169,8 @@ void main() {
         ),
       );
 
-      // The _openDocument path: clear, then store a fromSource document.
-      await store.clearDocument();
+      // The _openDocument path: remove, then store a fromSource document.
+      await store.removeRetainedContent();
       await store.saveDocument(MarkdownDocument.fromSource('# Second'));
 
       final loaded = store.loadDocument()!;
@@ -189,5 +200,97 @@ void main() {
     expect(loaded.appearance, AppearanceMode.dark);
     expect(loaded.fontScale, 1.3);
     expect(loaded.wrapCode, isTrue);
+  });
+
+  // --- DF-039 ---------------------------------------------------------------
+
+  test('content writes are suppressed against real storage while OFF', () async {
+    store.applyResolvedPolicy(RetentionPolicy.off);
+
+    final document = MarkdownDocument.fromSource('# Not for next time');
+    expect(await store.saveDocument(document), WriteOutcome.suppressedByPolicy);
+    expect(
+      await store.savePosition(
+        ReadingPosition(
+          documentId: document.id,
+          blockIndex: 2,
+          fraction: 0,
+          savedAt: DateTime.now(),
+        ),
+      ),
+      WriteOutcome.suppressedByPolicy,
+    );
+
+    // The proof that matters is at the raw-key level, not the decoded one.
+    expect(store.rawKeyPresence(Store.documentKey), RawKeyPresence.absent);
+    expect(store.rawKeyPresence(Store.positionKey), RawKeyPresence.absent);
+    expect(store.rawContentPresence(), RawKeyPresence.absent);
+  });
+
+  test('settings still persist against real storage while OFF', () async {
+    store.applyResolvedPolicy(RetentionPolicy.off);
+
+    expect(
+      await store.saveSettings(
+        const Settings(appearance: AppearanceMode.dark, keepForNextTime: false),
+      ),
+      WriteOutcome.saved,
+    );
+    expect(store.loadSettings().appearance, AppearanceMode.dark);
+  });
+
+  test('the retention preference round trips against real storage', () async {
+    expect(
+      await store.saveSettings(const Settings(keepForNextTime: true)),
+      WriteOutcome.saved,
+    );
+
+    final result = store.loadSettingsResult();
+    expect(result.outcome, SettingsReadOutcome.loaded);
+    expect(result.retentionFieldPresent, isTrue);
+    expect(result.settings.keepForNextTime, isTrue);
+    expect(result.storedKeepForNextTime, isTrue);
+
+    expect(
+      await store.saveSettings(const Settings(keepForNextTime: false)),
+      WriteOutcome.saved,
+    );
+    expect(store.loadSettingsResult().settings.keepForNextTime, isFalse);
+  });
+
+  test('removal against real storage verifies absence', () async {
+    final document = MarkdownDocument.fromSource('# Doc');
+    expect(await store.saveDocument(document), WriteOutcome.saved);
+    expect(
+      await store.savePosition(
+        ReadingPosition(
+          documentId: document.id,
+          blockIndex: 1,
+          fraction: 0,
+          savedAt: DateTime.now(),
+        ),
+      ),
+      WriteOutcome.saved,
+    );
+    expect(store.rawContentPresence(), RawKeyPresence.present);
+
+    expect(await store.removeRetainedContent(), CleanupOutcome.confirmedAbsent);
+    expect(store.rawKeyPresence(Store.documentKey), RawKeyPresence.absent);
+    expect(store.rawKeyPresence(Store.positionKey), RawKeyPresence.absent);
+  });
+
+  test('an undecodable record is still present, and still removable', () async {
+    // Written through the backend directly: this is the corrupt-data case, and
+    // the point is that `loadDocument` returning null must not be read as
+    // "nothing stored", or the data would be unreachable and unremovable.
+    await store.saveDocument(MarkdownDocument.fromSource('# Doc'));
+    final backend = HiveStorageBackend(Hive.box<String>(Store.boxName));
+    await backend.write(Store.documentKey, 'not json at all');
+
+    expect(store.loadDocument(), isNull);
+    expect(store.rawKeyPresence(Store.documentKey), RawKeyPresence.present);
+
+    expect(await store.removeRetainedContent(), CleanupOutcome.confirmedAbsent);
+    expect(store.rawKeyPresence(Store.documentKey), RawKeyPresence.absent);
   });
 }

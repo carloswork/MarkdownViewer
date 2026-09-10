@@ -14,6 +14,9 @@ import 'package:markdown_viewer/print_fonts.dart';
 // here are the ones ReaderScreen made.
 import 'package:markdown_viewer/print_surface_stub.dart';
 import 'package:markdown_viewer/reader_screen.dart';
+import 'package:markdown_viewer/store.dart';
+
+import 'support/fake_storage.dart';
 
 /// Covers the home/reader changes from Refinement Round 1.
 ///
@@ -23,6 +26,15 @@ import 'package:markdown_viewer/reader_screen.dart';
 /// store itself is covered by store_test.dart; the end-to-end round trip is a
 /// manual check (see the plan's Step 6).
 void main() {
+  // DF-039: these drive the real `MarkdownViewerApp`, which now reaches a real
+  // store on every document change. Opening it on an in-memory backend gives
+  // those paths the store's actual behaviour - including the retention gate -
+  // and gives each test an isolated store rather than one left mid-operation by
+  // the test before it.
+  setUp(() async {
+    await store.init(backend: MemoryBackend());
+  });
+
   Widget host(Widget child) => MaterialApp(home: child);
 
   /// The reader keeps an animation alive via ScrollablePositionedList, so
