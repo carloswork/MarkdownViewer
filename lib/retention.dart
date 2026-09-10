@@ -40,9 +40,12 @@ enum WriteOutcome {
   /// Not attempted: effective policy was OFF when the write was requested.
   suppressedByPolicy,
 
-  /// Invalidated before it ran, because a later removal or policy transition
-  /// bumped the generation it was issued under. This is the fence that stops a
-  /// stale completion from repopulating a key that was just removed.
+  /// The write was not applied because a later removal or policy transition
+  /// invalidated it. Two cases produce it: the generation fence, which stops a
+  /// completion issued before a removal from landing after it; and per-document
+  /// suppression, which refuses any further write for a document the user has
+  /// removed - including the reader's `dispose()` position flush, which is
+  /// issued after the removal and so is not stale in the generational sense.
   superseded,
 
   /// Attempted and rejected by the backend.
@@ -208,9 +211,7 @@ class RetentionTransitionResult {
 
   /// Refused before anything was written, because off-policy data is still
   /// unresolved. Effective policy stays OFF and no preference is persisted.
-  factory RetentionTransitionResult.blocked({
-    required CleanupOutcome cleanup,
-  }) {
+  factory RetentionTransitionResult.blocked({required CleanupOutcome cleanup}) {
     return RetentionTransitionResult(
       requested: RetentionPolicy.on,
       effectivePolicy: RetentionPolicy.off,
@@ -267,6 +268,140 @@ class RetentionTransitionResult {
       contentConfirmedAbsent;
 }
 
+/// What Home may offer as a way back into the current document.
+///
+/// The two positive cases are deliberately distinct rather than one "continue"
+/// with a caption. They make different promises: [currentSession] survives only
+/// until this page goes away, [retained] survives a reopen. Collapsing them
+/// would be the exact overstatement D-015's terminology rules forbid.
+enum ContinueOffer {
+  /// Nothing to continue.
+  none,
+
+  /// A document loaded in this page lifetime while retention is OFF. Real, and
+  /// gone on refresh.
+  currentSession,
+
+  /// A document stored under a confirmed ON preference, and the stored copy is
+  /// the one in memory.
+  retained,
+
+  /// A copy of this document is stored under a confirmed ON preference, but the
+  /// latest changes to it did not save.
+  ///
+  /// Distinct from [retained] because what would come back on a reopen is not
+  /// what is on screen, and saying `Saved in this browser` would be the
+  /// overstatement D-015 forbids. Distinct from [currentSession] because
+  /// something *is* stored in this browser, so the user must still be able to
+  /// see that and remove it.
+  retainedOutOfDate,
+}
+
+/// Something Home must tell the user about retention state.
+///
+/// Semantic rather than textual: the wording belongs to the UI layer, and
+/// keeping it there stops the copy rules in D-015 from being restated in three
+/// places.
+///
+/// More than one can apply at once, which is why Home takes a list. A profile
+/// whose settings will not decode *and* whose off-policy content was just
+/// removed has two true things to be told, and `plan.md` §18.1 requires
+/// preference uncertainty and data uncertainty to be reported separately rather
+/// than collapsed into whichever is judged more severe.
+enum RetentionAlert {
+  none,
+
+  /// Startup found content stored under a non-ON preference and removed it.
+  /// Session-scoped: it reports something that just happened (`plan.md` §21
+  /// step 5), not a standing condition.
+  legacyDataRemoved,
+
+  /// Neither the OFF preference nor the removal could be confirmed.
+  preferenceAndDataUnresolved,
+
+  /// Content could not be confirmed gone. Never say it was removed.
+  dataMayRemain,
+
+  /// Content is confirmed gone but the choice may not survive a future visit.
+  preferenceMayNotPersist,
+
+  /// The stored settings record could not be read, so the saved choice is
+  /// unknown and this session fails safe to OFF.
+  preferenceUnreadable,
+
+  /// No browser storage is open at all, so nothing can be kept, read, or
+  /// removed by Saudo in this session.
+  ///
+  /// Kept apart from [dataMayRemain] on purpose: that alert tells the user to
+  /// try removing again, and here no removal control could ever work. The only
+  /// truthful remedy left is the browser's own site-data control.
+  storageUnavailable,
+}
+
+/// Everything Home needs to render the retention surface, and nothing else.
+///
+/// Derived state, computed in one place from the live store and controller, so
+/// the widget layer never has to work out for itself what may truthfully be
+/// claimed. In particular it is derived from `store.effectivePolicy` rather than
+/// from the startup snapshot, which goes stale the moment the user enables
+/// retention.
+class RetentionHomeState {
+  const RetentionHomeState({
+    required this.keepForNextTime,
+    required this.continueOffer,
+    required this.alerts,
+    required this.recovery,
+    this.offPolicyResidue = false,
+    this.storageAvailable = true,
+    this.documentLabel,
+    this.busy = false,
+  });
+
+  /// The position of the `Keep for next time` control.
+  final bool keepForNextTime;
+
+  final ContinueOffer continueOffer;
+
+  /// Everything true about retention state right now, in the order it should
+  /// be read. Empty when there is nothing to say.
+  final List<RetentionAlert> alerts;
+
+  /// Stored content exists but no document is product-accessible, so Home shows
+  /// the generic recovery state: no identity, no continue, no reader route.
+  final bool recovery;
+
+  /// Stored content exists that no retained document governs, so the generic
+  /// removal control is offered - with or without a document in memory.
+  ///
+  /// Wider than [recovery]. After a failed ON to OFF removal the document stays
+  /// readable in memory for this page lifetime (`plan.md` §19.3 step 6), so
+  /// there is a document on screen *and* data left behind. That state still has
+  /// to offer a way to try the removal again; otherwise Home would tell the
+  /// user to retry a control it is not showing (D-015).
+  final bool offPolicyResidue;
+
+  /// Whether any browser storage is open. When it is not, nothing can be kept
+  /// and no removal can be attempted, so neither is offered.
+  final bool storageAvailable;
+
+  /// The stored document's existing bounded identity. Set only for
+  /// [ContinueOffer.retained] and [ContinueOffer.retainedOutOfDate]; never in
+  /// [recovery], per D-015.
+  final String? documentLabel;
+
+  /// A retention operation is in flight, so its controls are disabled.
+  final bool busy;
+
+  /// Whether the retention choice may be changed right now.
+  ///
+  /// Only the ON direction is ever blocked by stored data: D-010 forbids
+  /// persisting or confirming ON while off-policy data is unresolved, but
+  /// turning retention OFF is the privacy-protective direction and removes data
+  /// itself, so it stays available. Nothing can be changed without storage.
+  bool get canChangePreference =>
+      !busy && storageAvailable && (keepForNextTime || !offPolicyResidue);
+}
+
 /// Owns the retention policy and every transition that changes it.
 ///
 /// This is the seam `plan.md` §24 asks for: the [Store] holds the durable
@@ -279,15 +414,15 @@ class RetentionController {
 
   final RetentionStore _store;
 
-  bool _offPolicyDataUnresolved = false;
-  StartupResolution? _startup;
-
   /// Whether off-policy data blocks enabling retention.
-  bool get offPolicyDataUnresolved => _offPolicyDataUnresolved;
+  ///
+  /// Delegated to the store, which owns it: the controller is deliberately
+  /// stateless so that reopening storage resets everything the interlock
+  /// depends on, and so a replacement controller over the same store cannot
+  /// disagree with it about whether cleanup is outstanding.
+  bool get offPolicyDataUnresolved => _store.offPolicyDataUnresolved;
 
   RetentionPolicy get effectivePolicy => _store.effectivePolicy;
-
-  StartupResolution? get startupResolution => _startup;
 
   /// Resolves the effective policy for this page lifetime and, when the stored
   /// content is off-policy, attempts to remove it before anything can reach it.
@@ -314,7 +449,7 @@ class RetentionController {
       // content writes before this runs.
       _store.applyResolvedPolicy(RetentionPolicy.off);
       cleanup = await _store.removeRetainedContent();
-      _offPolicyDataUnresolved = !cleanup.isConfirmedAbsent;
+      _store.setOffPolicyDataUnresolved(!cleanup.isConfirmedAbsent);
     }
 
     final effective = storedOn && !offPolicy
@@ -322,7 +457,7 @@ class RetentionController {
         : RetentionPolicy.off;
     _store.applyResolvedPolicy(effective);
 
-    final resolution = StartupResolution(
+    return StartupResolution(
       effectivePolicy: effective,
       settingsLoad: load,
       rawContentPresentAtStartup: rawPresence,
@@ -332,8 +467,6 @@ class RetentionController {
           rawPresence == RawKeyPresence.present,
       cleanup: cleanup,
     );
-    _startup = resolution;
-    return resolution;
   }
 
   /// OFF to ON, following `plan.md` §19.2.
@@ -349,10 +482,11 @@ class RetentionController {
     // 1-2. Interlock. Any unresolved off-policy data must be gone before ON can
     // be persisted, otherwise enabling retention would silently reclassify data
     // the user never chose to keep.
-    if (_offPolicyDataUnresolved || _store.rawContentPresence() != RawKeyPresence.absent) {
+    if (offPolicyDataUnresolved ||
+        _store.rawContentPresence() != RawKeyPresence.absent) {
       final retry = await _store.removeRetainedContent();
-      _offPolicyDataUnresolved = !retry.isConfirmedAbsent;
-      if (_offPolicyDataUnresolved) {
+      _store.setOffPolicyDataUnresolved(!retry.isConfirmedAbsent);
+      if (offPolicyDataUnresolved) {
         return RetentionTransitionResult.blocked(cleanup: retry);
       }
     }
@@ -415,7 +549,7 @@ class RetentionController {
     // 4-5. Delete regardless of how the preference write went: a failed
     // preference write is not a reason to leave content behind.
     final cleanup = await _store.removeRetainedContent();
-    _offPolicyDataUnresolved = !cleanup.isConfirmedAbsent;
+    _store.setOffPolicyDataUnresolved(!cleanup.isConfirmedAbsent);
 
     return RetentionTransitionResult(
       requested: RetentionPolicy.off,
@@ -429,12 +563,19 @@ class RetentionController {
   ///
   /// Deliberately does not touch the preference: removing this document and
   /// choosing what happens to future ones are separate intentions (D-014).
-  Future<CleanupOutcome> removeSavedDocument() async {
-    final cleanup = await _store.removeRetainedContent();
+  ///
+  /// [documentId] is the document being removed. Passing it suppresses any
+  /// further content write for that document, which is what makes the verified
+  /// absence hold rather than being undone a moment later by the reader's
+  /// `dispose()` position flush.
+  Future<CleanupOutcome> removeSavedDocument({String? documentId}) async {
+    final cleanup = await _store.removeRetainedContent(
+      suppressDocumentId: documentId,
+    );
     if (!cleanup.isConfirmedAbsent) {
       // Data that could not be removed is off-policy for any later enable, even
       // though the preference itself is still legitimately ON.
-      _offPolicyDataUnresolved = true;
+      _store.setOffPolicyDataUnresolved(true);
     }
     return cleanup;
   }
@@ -445,9 +586,11 @@ class RetentionController {
   /// they are separate methods because they are separate user-facing controls
   /// reached from different states, and D-015 requires the recovery path to
   /// stay distinct rather than becoming a synonym for the retention choice.
-  Future<CleanupOutcome> removeUnreadableData() async {
-    final cleanup = await _store.removeRetainedContent();
-    _offPolicyDataUnresolved = !cleanup.isConfirmedAbsent;
+  Future<CleanupOutcome> removeUnreadableData({String? documentId}) async {
+    final cleanup = await _store.removeRetainedContent(
+      suppressDocumentId: documentId,
+    );
+    _store.setOffPolicyDataUnresolved(!cleanup.isConfirmedAbsent);
     return cleanup;
   }
 }
@@ -459,6 +602,11 @@ class RetentionController {
 /// the Hive-backed store having to know about each other.
 abstract class RetentionStore {
   RetentionPolicy get effectivePolicy;
+
+  /// Whether stored content exists that no confirmed ON preference governs.
+  bool get offPolicyDataUnresolved;
+
+  void setOffPolicyDataUnresolved(bool value);
 
   void applyResolvedPolicy(RetentionPolicy policy);
 
@@ -472,5 +620,5 @@ abstract class RetentionStore {
 
   Future<WriteOutcome> savePosition(ReadingPosition position);
 
-  Future<CleanupOutcome> removeRetainedContent();
+  Future<CleanupOutcome> removeRetainedContent({String? suppressDocumentId});
 }

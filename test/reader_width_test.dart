@@ -80,6 +80,7 @@ void main() {
             onEdit: () {},
             onLoadFile: () {},
             onReturnHome: () {},
+            onPositionChanged: (_) {},
           ),
         ),
       );

@@ -14,6 +14,7 @@ import 'package:markdown_viewer/print_fonts.dart';
 // here are the ones ReaderScreen made.
 import 'package:markdown_viewer/print_surface_stub.dart';
 import 'package:markdown_viewer/reader_screen.dart';
+import 'package:markdown_viewer/retention.dart';
 import 'package:markdown_viewer/store.dart';
 
 import 'support/fake_storage.dart';
@@ -64,11 +65,20 @@ void main() {
       await tester.pumpWidget(
         host(
           HomeScreen(
+            retention: const RetentionHomeState(
+              keepForNextTime: false,
+              continueOffer: ContinueOffer.none,
+              alerts: [],
+              recovery: false,
+            ),
             document: null,
             onContinue: () {},
             onPaste: () {},
             onLoadFile: () {},
             onOpenSettings: () {},
+            onKeepForNextTimeChanged: (_) {},
+            onRemoveSavedDocument: () {},
+            onRemoveRetainedData: () {},
           ),
         ),
       );
@@ -84,6 +94,12 @@ void main() {
       await tester.pumpWidget(
         host(
           HomeScreen(
+            retention: const RetentionHomeState(
+              keepForNextTime: false,
+              continueOffer: ContinueOffer.currentSession,
+              alerts: [],
+              recovery: false,
+            ),
             document: MarkdownDocument.fromSource(
               '# Stored\n\nBody.',
               sourceName: 'sample_large_document.md',
@@ -92,6 +108,9 @@ void main() {
             onPaste: () {},
             onLoadFile: () {},
             onOpenSettings: () {},
+            onKeepForNextTimeChanged: (_) {},
+            onRemoveSavedDocument: () {},
+            onRemoveRetainedData: () {},
           ),
         ),
       );
@@ -104,11 +123,20 @@ void main() {
       await tester.pumpWidget(
         host(
           HomeScreen(
+            retention: const RetentionHomeState(
+              keepForNextTime: false,
+              continueOffer: ContinueOffer.currentSession,
+              alerts: [],
+              recovery: false,
+            ),
             document: MarkdownDocument.fromSource('# Stored\n\nBody.'),
             onContinue: () {},
             onPaste: () {},
             onLoadFile: () {},
             onOpenSettings: () {},
+            onKeepForNextTimeChanged: (_) {},
+            onRemoveSavedDocument: () {},
+            onRemoveRetainedData: () {},
           ),
         ),
       );
@@ -123,11 +151,20 @@ void main() {
       await tester.pumpWidget(
         host(
           HomeScreen(
+            retention: const RetentionHomeState(
+              keepForNextTime: false,
+              continueOffer: ContinueOffer.currentSession,
+              alerts: [],
+              recovery: false,
+            ),
             document: MarkdownDocument.fromSource('# Stored'),
             onContinue: () {},
             onPaste: () {},
             onLoadFile: () {},
             onOpenSettings: () {},
+            onKeepForNextTimeChanged: (_) {},
+            onRemoveSavedDocument: () {},
+            onRemoveRetainedData: () {},
           ),
         ),
       );
@@ -146,11 +183,20 @@ void main() {
       await tester.pumpWidget(
         host(
           HomeScreen(
+            retention: const RetentionHomeState(
+              keepForNextTime: false,
+              continueOffer: ContinueOffer.none,
+              alerts: [],
+              recovery: false,
+            ),
             document: null,
             onContinue: () {},
             onPaste: () {},
             onLoadFile: () {},
             onOpenSettings: () {},
+            onKeepForNextTimeChanged: (_) {},
+            onRemoveSavedDocument: () {},
+            onRemoveRetainedData: () {},
           ),
         ),
       );
@@ -169,11 +215,20 @@ void main() {
       await tester.pumpWidget(
         host(
           HomeScreen(
+            retention: const RetentionHomeState(
+              keepForNextTime: false,
+              continueOffer: ContinueOffer.currentSession,
+              alerts: [],
+              recovery: false,
+            ),
             document: MarkdownDocument.fromSource('# Stored'),
             onContinue: () => continued++,
             onPaste: () => pasted++,
             onLoadFile: () => loaded++,
             onOpenSettings: () {},
+            onKeepForNextTimeChanged: (_) {},
+            onRemoveSavedDocument: () {},
+            onRemoveRetainedData: () {},
           ),
         ),
       );
@@ -206,6 +261,7 @@ void main() {
             onEdit: () {},
             onLoadFile: onLoadFile ?? () {},
             onReturnHome: onReturnHome ?? () {},
+            onPositionChanged: (_) {},
           ),
         ),
       );
@@ -317,24 +373,16 @@ void main() {
     ) async {
       await tester.pumpWidget(
         MarkdownViewerApp(
+          startup: offStartup,
           initialSettings: const Settings(),
           initialDocument: document,
         ),
       );
       await settle(tester);
 
-      if (document != null) {
-        // A stored document opens straight into the reader; go home first.
-        await tester.tap(find.byIcon(Icons.more_horiz_rounded));
-        await settle(tester);
-        // With five entries the sheet can be taller than the default 800x600
-        // test surface, so scroll it into view exactly as a user would on a
-        // short viewport. The sheet is scrollable for precisely this reason.
-        await tester.ensureVisible(find.text('Return to main'));
-        await settle(tester);
-        await tester.tap(find.text('Return to main'));
-        await settle(tester);
-      }
+      // DF-039: every launch lands on Home, including one with a document, so
+      // there is no longer a reader to escape from first. That is the accepted
+      // separation of retaining a document from being dropped into it.
       expect(find.text('Load from file'), findsOneWidget);
     }
 
@@ -464,13 +512,18 @@ void main() {
     Future<void> loadFromReader(WidgetTester tester) async {
       await tester.pumpWidget(
         MarkdownViewerApp(
+          startup: offStartup,
           initialSettings: const Settings(),
           initialDocument: existing,
         ),
       );
       await settle(tester);
 
-      // Starts in the reader, not Home.
+      // DF-039: launch lands on Home with a Continue action, not in the reader.
+      // Entering deliberately is the point, so these tests enter deliberately.
+      expect(find.text('Continue reading'), findsOneWidget);
+      await tester.tap(find.text('Continue reading'));
+      await settle(tester);
       expect(find.textContaining('Existing'), findsWidgets);
 
       await tester.tap(find.byIcon(Icons.more_horiz_rounded));
@@ -597,6 +650,7 @@ void main() {
             onEdit: () {},
             onLoadFile: () {},
             onReturnHome: () {},
+            onPositionChanged: (_) {},
           ),
         ),
       );
@@ -1244,6 +1298,7 @@ class _PreferenceHostState extends State<_PreferenceHost> {
         onEdit: () {},
         onLoadFile: () {},
         onReturnHome: () {},
+        onPositionChanged: (_) {},
       ),
     );
   }

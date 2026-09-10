@@ -1,6 +1,37 @@
 import 'dart:async';
 
+import 'package:markdown_viewer/models.dart';
+import 'package:markdown_viewer/retention.dart';
 import 'package:markdown_viewer/store.dart';
+
+/// The startup resolution a fresh profile produces: no settings record, so the
+/// retention preference is off, and nothing stored to clean up.
+///
+/// The default for tests that are about something other than retention. It is
+/// the state a first-time visitor is in, so it is also the honest default.
+const StartupResolution offStartup = StartupResolution(
+  effectivePolicy: RetentionPolicy.off,
+  settingsLoad: SettingsLoadResult(
+    settings: Settings(),
+    outcome: SettingsReadOutcome.missing,
+    retentionFieldPresent: false,
+  ),
+  rawContentPresentAtStartup: RawKeyPresence.absent,
+  legacyRecord: false,
+);
+
+/// The startup resolution for a profile whose saved choice is on, with a valid
+/// retained document already on disk.
+const StartupResolution onStartup = StartupResolution(
+  effectivePolicy: RetentionPolicy.on,
+  settingsLoad: SettingsLoadResult(
+    settings: Settings(keepForNextTime: true),
+    outcome: SettingsReadOutcome.loaded,
+    retentionFieldPresent: true,
+  ),
+  rawContentPresentAtStartup: RawKeyPresence.present,
+  legacyRecord: false,
+);
 
 /// An in-memory [StorageBackend] that behaves like a healthy browser.
 ///

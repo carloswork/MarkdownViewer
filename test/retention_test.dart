@@ -161,23 +161,31 @@ void main() {
   });
 
   group('write suppression while OFF', () {
-    test('document and position writes are refused and store nothing', () async {
-      await retention.resolveStartup();
-      expect(store.effectivePolicy, RetentionPolicy.off);
+    test(
+      'document and position writes are refused and store nothing',
+      () async {
+        await retention.resolveStartup();
+        expect(store.effectivePolicy, RetentionPolicy.off);
 
-      final d = doc();
-      expect(await store.saveDocument(d), WriteOutcome.suppressedByPolicy);
-      expect(await store.savePosition(posFor(d)), WriteOutcome.suppressedByPolicy);
+        final d = doc();
+        expect(await store.saveDocument(d), WriteOutcome.suppressedByPolicy);
+        expect(
+          await store.savePosition(posFor(d)),
+          WriteOutcome.suppressedByPolicy,
+        );
 
-      expect(backend.writes, isEmpty, reason: 'the backend was never asked');
-      expect(store.rawContentPresence(), RawKeyPresence.absent);
-    });
+        expect(backend.writes, isEmpty, reason: 'the backend was never asked');
+        expect(store.rawContentPresence(), RawKeyPresence.absent);
+      },
+    );
 
     test('settings writes are not gated on retention policy', () async {
       await retention.resolveStartup();
 
       expect(
-        await store.saveSettings(const Settings(appearance: AppearanceMode.dark)),
+        await store.saveSettings(
+          const Settings(appearance: AppearanceMode.dark),
+        ),
         WriteOutcome.saved,
       );
       expect(store.loadSettings().appearance, AppearanceMode.dark);
@@ -191,9 +199,13 @@ void main() {
       // edited document, a script-preference change, and a scroll position.
       for (final attempt in <Future<WriteOutcome>>[
         store.saveDocument(d),
-        store.saveDocument(d.copyWith(source: '# Edited', updatedAt: DateTime.now())),
         store.saveDocument(
-          d.copyWith(scriptPreference: DocumentScriptPreference.simplifiedChinese),
+          d.copyWith(source: '# Edited', updatedAt: DateTime.now()),
+        ),
+        store.saveDocument(
+          d.copyWith(
+            scriptPreference: DocumentScriptPreference.simplifiedChinese,
+          ),
         ),
         store.savePosition(posFor(d)),
       ]) {
@@ -236,7 +248,10 @@ void main() {
       await givenRetainedDocument();
       expect(store.rawContentPresence(), RawKeyPresence.present);
 
-      expect(await store.removeRetainedContent(), CleanupOutcome.confirmedAbsent);
+      expect(
+        await store.removeRetainedContent(),
+        CleanupOutcome.confirmedAbsent,
+      );
       expect(store.rawKeyPresence(Store.documentKey), RawKeyPresence.absent);
       expect(store.rawKeyPresence(Store.positionKey), RawKeyPresence.absent);
     });
@@ -293,12 +308,42 @@ void main() {
         const Settings(appearance: AppearanceMode.dark, keepForNextTime: true),
       );
 
-      expect(await store.removeRetainedContent(), CleanupOutcome.confirmedAbsent);
+      expect(
+        await store.removeRetainedContent(),
+        CleanupOutcome.confirmedAbsent,
+      );
 
       final settings = store.loadSettings();
       expect(settings.appearance, AppearanceMode.dark);
       expect(settings.keepForNextTime, isTrue);
     });
+
+    test(
+      'a failed presence read does not stop the delete being attempted',
+      () async {
+        await givenRetainedDocument();
+        backend.failReads.add(Store.documentKey);
+
+        expect(
+          await store.removeRetainedContent(),
+          CleanupOutcome.indeterminate,
+          reason: 'absence still cannot be verified while the read fails',
+        );
+        expect(
+          backend.data.containsKey(Store.documentKey),
+          isFalse,
+          reason: 'but the delete was attempted, and it worked',
+        );
+        expect(backend.data.containsKey(Store.positionKey), isFalse);
+
+        // Once the read recovers, the same removal verifies what it did.
+        backend.failReads.clear();
+        expect(
+          await store.removeRetainedContent(),
+          CleanupOutcome.confirmedAbsent,
+        );
+      },
+    );
 
     test('unavailable storage cannot claim absence', () async {
       final unavailable = Store();
@@ -360,32 +405,34 @@ void main() {
       );
     });
 
-    test('a write already requested when a removal is issued cannot repopulate',
-        () async {
-      final d = await givenRetainedDocument();
+    test(
+      'a write already requested when a removal is issued cannot repopulate',
+      () async {
+        final d = await givenRetainedDocument();
 
-      final gate = backend.stall(Store.documentKey);
-      final stale = store.saveDocument(d.copyWith(source: '# Stale'));
-      await pumpEventQueue();
-      final stalePosition = store.savePosition(posFor(d, blockIndex: 77));
+        final gate = backend.stall(Store.documentKey);
+        final stale = store.saveDocument(d.copyWith(source: '# Stale'));
+        await pumpEventQueue();
+        final stalePosition = store.savePosition(posFor(d, blockIndex: 77));
 
-      final cleanup = store.removeRetainedContent();
-      gate.complete();
+        final cleanup = store.removeRetainedContent();
+        gate.complete();
 
-      await Future.wait<Object?>([stale, stalePosition, cleanup]);
-      await store.settlePendingOperations();
+        await Future.wait<Object?>([stale, stalePosition, cleanup]);
+        await store.settlePendingOperations();
 
-      expect(await stalePosition, WriteOutcome.superseded);
-      expect(
-        store.rawContentPresence(),
-        RawKeyPresence.absent,
-        reason: 'every write here was requested before the removal was issued, '
-            'so the fence covers all of them',
-      );
-    });
+        expect(await stalePosition, WriteOutcome.superseded);
+        expect(
+          store.rawContentPresence(),
+          RawKeyPresence.absent,
+          reason:
+              'every write here was requested before the removal was issued, '
+              'so the fence covers all of them',
+        );
+      },
+    );
 
-    test('the fence does not cover a write requested after the removal',
-        () async {
+    test('the fence does not cover a write requested after the removal', () async {
       // The boundary, pinned deliberately rather than left to be discovered.
       // `removeRetainedContent` invalidates writes already requested when it is
       // issued; a write requested afterwards carries the new generation, so it
@@ -408,93 +455,108 @@ void main() {
       expect(
         store.rawContentPresence(),
         RawKeyPresence.present,
-        reason: 'absence was verified when the removal ran, and a later write '
+        reason:
+            'absence was verified when the removal ran, and a later write '
             'legitimately followed it',
       );
     });
 
-    test('writes issued under ON are dropped once policy flips to OFF', () async {
-      final d = await givenRetainedDocument();
+    test(
+      'writes issued under ON are dropped once policy flips to OFF',
+      () async {
+        final d = await givenRetainedDocument();
 
-      final gate = backend.stall(Store.documentKey);
-      final running = store.saveDocument(d.copyWith(source: '# Running'));
-      await pumpEventQueue();
-      final queued = store.savePosition(posFor(d, blockIndex: 55));
+        final gate = backend.stall(Store.documentKey);
+        final running = store.saveDocument(d.copyWith(source: '# Running'));
+        await pumpEventQueue();
+        final queued = store.savePosition(posFor(d, blockIndex: 55));
 
-      // The transition bumps the content generation synchronously.
-      store.applyResolvedPolicy(RetentionPolicy.off);
-      gate.complete();
+        // The transition bumps the content generation synchronously.
+        store.applyResolvedPolicy(RetentionPolicy.off);
+        gate.complete();
 
-      expect(await running, WriteOutcome.saved);
-      expect(await queued, WriteOutcome.superseded);
-      expect(
-        await store.saveDocument(d),
-        WriteOutcome.suppressedByPolicy,
-        reason: 'anything requested after the flip is refused outright',
-      );
-    });
+        expect(await running, WriteOutcome.saved);
+        expect(await queued, WriteOutcome.superseded);
+        expect(
+          await store.saveDocument(d),
+          WriteOutcome.suppressedByPolicy,
+          reason: 'anything requested after the flip is refused outright',
+        );
+      },
+    );
 
-    test('an older settings completion cannot overwrite a newer preference',
-        () async {
-      // The older write is still queued when the newer one is requested.
-      final gate = backend.stall(Store.settingsKey);
-      final blocker = store.saveSettings(const Settings(fontScale: 1.1));
-      await pumpEventQueue();
+    test(
+      'an older settings completion cannot overwrite a newer preference',
+      () async {
+        // The older write is still queued when the newer one is requested.
+        final gate = backend.stall(Store.settingsKey);
+        final blocker = store.saveSettings(const Settings(fontScale: 1.1));
+        await pumpEventQueue();
 
-      final older = store.saveSettings(const Settings(keepForNextTime: false));
-      final newer = store.saveSettings(const Settings(keepForNextTime: true));
-      gate.complete();
+        final older = store.saveSettings(
+          const Settings(keepForNextTime: false),
+        );
+        final newer = store.saveSettings(const Settings(keepForNextTime: true));
+        gate.complete();
 
-      expect(
-        await blocker,
-        WriteOutcome.saved,
-        reason: 'it had already passed its generation check before the others '
-            'were requested, so it lands - and is then overwritten',
-      );
-      expect(await older, WriteOutcome.superseded);
-      expect(await newer, WriteOutcome.saved);
-      await store.settlePendingOperations();
+        expect(
+          await blocker,
+          WriteOutcome.saved,
+          reason:
+              'it had already passed its generation check before the others '
+              'were requested, so it lands - and is then overwritten',
+        );
+        expect(await older, WriteOutcome.superseded);
+        expect(await newer, WriteOutcome.saved);
+        await store.settlePendingOperations();
 
-      expect(
-        store.loadSettingsResult().settings.keepForNextTime,
-        isTrue,
-        reason: 'the last requested value is the one that survives',
-      );
-    });
+        expect(
+          store.loadSettingsResult().settings.keepForNextTime,
+          isTrue,
+          reason: 'the last requested value is the one that survives',
+        );
+      },
+    );
 
-    test('an in-flight settings write is overwritten by the newer value',
-        () async {
-      // The older write has already started, so it lands - and is then
-      // overwritten, rather than landing last.
-      final gate = backend.stall(Store.settingsKey);
-      final older = store.saveSettings(const Settings(keepForNextTime: false));
-      await pumpEventQueue();
-      final newer = store.saveSettings(const Settings(keepForNextTime: true));
-      gate.complete();
+    test(
+      'an in-flight settings write is overwritten by the newer value',
+      () async {
+        // The older write has already started, so it lands - and is then
+        // overwritten, rather than landing last.
+        final gate = backend.stall(Store.settingsKey);
+        final older = store.saveSettings(
+          const Settings(keepForNextTime: false),
+        );
+        await pumpEventQueue();
+        final newer = store.saveSettings(const Settings(keepForNextTime: true));
+        gate.complete();
 
-      expect(await older, WriteOutcome.saved);
-      expect(await newer, WriteOutcome.saved);
-      await store.settlePendingOperations();
+        expect(await older, WriteOutcome.saved);
+        expect(await newer, WriteOutcome.saved);
+        await store.settlePendingOperations();
 
-      expect(store.loadSettingsResult().settings.keepForNextTime, isTrue);
-    });
+        expect(store.loadSettingsResult().settings.keepForNextTime, isTrue);
+      },
+    );
 
-    test('the settlement barrier waits for everything already requested',
-        () async {
-      await givenRetainedDocument();
-      final gate = backend.stall(Store.documentKey);
-      final pending = store.saveDocument(doc('# Pending'));
+    test(
+      'the settlement barrier waits for everything already requested',
+      () async {
+        await givenRetainedDocument();
+        final gate = backend.stall(Store.documentKey);
+        final pending = store.saveDocument(doc('# Pending'));
 
-      var settled = false;
-      unawaited(store.settlePendingOperations().then((_) => settled = true));
-      await pumpEventQueue();
-      expect(settled, isFalse);
+        var settled = false;
+        unawaited(store.settlePendingOperations().then((_) => settled = true));
+        await pumpEventQueue();
+        expect(settled, isFalse);
 
-      gate.complete();
-      await pending;
-      await store.settlePendingOperations();
-      expect(settled, isTrue);
-    });
+        gate.complete();
+        await pending;
+        await store.settlePendingOperations();
+        expect(settled, isTrue);
+      },
+    );
   });
 
   group('OFF to ON', () {
@@ -522,7 +584,10 @@ void main() {
       backend.failWrites.add(Store.settingsKey);
       final d = doc();
 
-      final result = await retention.enable(current: const Settings(), document: d);
+      final result = await retention.enable(
+        current: const Settings(),
+        document: d,
+      );
 
       expect(result.preferenceOutcome, WriteOutcome.failed);
       expect(result.keptForNextTime, isFalse);
@@ -548,27 +613,30 @@ void main() {
       expect(
         result.keptForNextTime,
         isFalse,
-        reason: 'the preference survives for later loads; this document is not saved',
+        reason:
+            'the preference survives for later loads; this document is not saved',
       );
       expect(result.effectivePolicy, RetentionPolicy.on);
     });
 
-    test('a failed position write does not deny the document was saved',
-        () async {
-      await retention.resolveStartup();
-      backend.failWrites.add(Store.positionKey);
-      final d = doc();
+    test(
+      'a failed position write does not deny the document was saved',
+      () async {
+        await retention.resolveStartup();
+        backend.failWrites.add(Store.positionKey);
+        final d = doc();
 
-      final result = await retention.enable(
-        current: const Settings(),
-        document: d,
-        position: posFor(d),
-      );
+        final result = await retention.enable(
+          current: const Settings(),
+          document: d,
+          position: posFor(d),
+        );
 
-      expect(result.documentOutcome, WriteOutcome.saved);
-      expect(result.positionOutcome, WriteOutcome.failed);
-      expect(result.keptForNextTime, isTrue);
-    });
+        expect(result.documentOutcome, WriteOutcome.saved);
+        expect(result.positionOutcome, WriteOutcome.failed);
+        expect(result.keptForNextTime, isTrue);
+      },
+    );
 
     test('a position belonging to another document is not written', () async {
       await retention.resolveStartup();
@@ -576,7 +644,10 @@ void main() {
       // An explicit id: `fromSource` derives one from the current microsecond,
       // so two documents built in the same tick would share it and this test
       // would silently stop testing anything.
-      final other = MarkdownDocument.fromSource('# Other', id: 'other-document');
+      final other = MarkdownDocument.fromSource(
+        '# Other',
+        id: 'other-document',
+      );
       expect(other.id, isNot(d.id));
 
       final result = await retention.enable(
@@ -620,7 +691,8 @@ void main() {
       expect(
         store.loadSettingsResult().settings.keepForNextTime,
         isFalse,
-        reason: 'no durable ON preference may exist while cleanup is unresolved',
+        reason:
+            'no durable ON preference may exist while cleanup is unresolved',
       );
     });
 
@@ -650,53 +722,61 @@ void main() {
       );
     });
 
-    test('an interrupted cleanup leaves no durable ON to reclassify data',
-        () async {
-      backend.data[Store.settingsKey] = jsonEncode({'appearance': 'system'});
-      backend.data[Store.documentKey] = jsonEncode(doc('# Legacy').toJson());
-      backend.failDeletes.add(Store.documentKey);
+    test(
+      'an interrupted cleanup leaves no durable ON to reclassify data',
+      () async {
+        backend.data[Store.settingsKey] = jsonEncode({'appearance': 'system'});
+        backend.data[Store.documentKey] = jsonEncode(doc('# Legacy').toJson());
+        backend.failDeletes.add(Store.documentKey);
 
-      await retention.resolveStartup();
-      await retention.enable(current: const Settings(), document: doc('# New'));
+        await retention.resolveStartup();
+        await retention.enable(
+          current: const Settings(),
+          document: doc('# New'),
+        );
 
-      // Simulate the reload: a new controller over the same stored bytes.
-      final reloaded = RetentionController(store);
-      final again = await reloaded.resolveStartup();
+        // Simulate the reload: a new controller over the same stored bytes.
+        final reloaded = RetentionController(store);
+        final again = await reloaded.resolveStartup();
 
-      expect(again.effectivePolicy, RetentionPolicy.off);
-      expect(again.offPolicyDataUnresolved, isTrue);
-      expect(
-        store.loadSettingsResult().settings.keepForNextTime,
-        isFalse,
-        reason: 'interruption returns to OFF resolution, not to silent consent',
-      );
-    });
+        expect(again.effectivePolicy, RetentionPolicy.off);
+        expect(again.offPolicyDataUnresolved, isTrue);
+        expect(
+          store.loadSettingsResult().settings.keepForNextTime,
+          isFalse,
+          reason:
+              'interruption returns to OFF resolution, not to silent consent',
+        );
+      },
+    );
 
-    test('legacy content is removed and reported when cleanup succeeds',
-        () async {
-      backend.data[Store.settingsKey] = jsonEncode({
-        'appearance': 'dark',
-        'fontScale': 1.15,
-      });
-      backend.data[Store.documentKey] = jsonEncode(doc('# Legacy').toJson());
-      backend.data[Store.positionKey] = jsonEncode(
-        posFor(doc('# Legacy')).toJson(),
-      );
+    test(
+      'legacy content is removed and reported when cleanup succeeds',
+      () async {
+        backend.data[Store.settingsKey] = jsonEncode({
+          'appearance': 'dark',
+          'fontScale': 1.15,
+        });
+        backend.data[Store.documentKey] = jsonEncode(doc('# Legacy').toJson());
+        backend.data[Store.positionKey] = jsonEncode(
+          posFor(doc('# Legacy')).toJson(),
+        );
 
-      final resolution = await retention.resolveStartup();
+        final resolution = await retention.resolveStartup();
 
-      expect(resolution.legacyRecord, isTrue);
-      expect(resolution.cleanup, CleanupOutcome.confirmedAbsent);
-      expect(resolution.legacyContentRemoved, isTrue);
-      expect(resolution.offPolicyDataUnresolved, isFalse);
-      expect(resolution.effectivePolicy, RetentionPolicy.off);
-      expect(store.rawContentPresence(), RawKeyPresence.absent);
-      expect(
-        store.loadSettings().appearance,
-        AppearanceMode.dark,
-        reason: 'appearance settings survive the content cleanup',
-      );
-    });
+        expect(resolution.legacyRecord, isTrue);
+        expect(resolution.cleanup, CleanupOutcome.confirmedAbsent);
+        expect(resolution.legacyContentRemoved, isTrue);
+        expect(resolution.offPolicyDataUnresolved, isFalse);
+        expect(resolution.effectivePolicy, RetentionPolicy.off);
+        expect(store.rawContentPresence(), RawKeyPresence.absent);
+        expect(
+          store.loadSettings().appearance,
+          AppearanceMode.dark,
+          reason: 'appearance settings survive the content cleanup',
+        );
+      },
+    );
 
     test('an orphaned position alone is cleaned up under OFF', () async {
       backend.data[Store.positionKey] = jsonEncode(posFor(doc()).toJson());
@@ -706,21 +786,23 @@ void main() {
       expect(store.rawContentPresence(), RawKeyPresence.absent);
     });
 
-    test('content stored under an unreadable preference is off-policy',
-        () async {
-      backend.data[Store.settingsKey] = 'corrupt';
-      backend.data[Store.documentKey] = jsonEncode(doc().toJson());
+    test(
+      'content stored under an unreadable preference is off-policy',
+      () async {
+        backend.data[Store.settingsKey] = 'corrupt';
+        backend.data[Store.documentKey] = jsonEncode(doc().toJson());
 
-      final resolution = await retention.resolveStartup();
-      expect(resolution.effectivePolicy, RetentionPolicy.off);
-      expect(resolution.preferenceUncertain, isTrue);
-      expect(resolution.cleanup, CleanupOutcome.confirmedAbsent);
-      expect(
-        resolution.legacyRecord,
-        isFalse,
-        reason: 'an unreadable record is not the same as a v1.1.0 record',
-      );
-    });
+        final resolution = await retention.resolveStartup();
+        expect(resolution.effectivePolicy, RetentionPolicy.off);
+        expect(resolution.preferenceUncertain, isTrue);
+        expect(resolution.cleanup, CleanupOutcome.confirmedAbsent);
+        expect(
+          resolution.legacyRecord,
+          isFalse,
+          reason: 'an unreadable record is not the same as a v1.1.0 record',
+        );
+      },
+    );
 
     test('a confirmed ON profile keeps its content untouched', () async {
       final d = await givenRetainedDocument();
@@ -737,60 +819,66 @@ void main() {
   });
 
   group('ON to OFF', () {
-    test('confirms only when the preference and both keys are confirmed',
-        () async {
-      await givenRetainedDocument();
+    test(
+      'confirms only when the preference and both keys are confirmed',
+      () async {
+        await givenRetainedDocument();
 
-      final result = await retention.disable(
-        current: const Settings(keepForNextTime: true),
-      );
+        final result = await retention.disable(
+          current: const Settings(keepForNextTime: true),
+        );
 
-      expect(result.effectivePolicy, RetentionPolicy.off);
-      expect(result.preferenceOutcome, WriteOutcome.saved);
-      expect(result.cleanup, CleanupOutcome.confirmedAbsent);
-      expect(result.removedAndWillNotReturn, isTrue);
-      expect(store.rawContentPresence(), RawKeyPresence.absent);
-      expect(store.loadSettingsResult().settings.keepForNextTime, isFalse);
-    });
+        expect(result.effectivePolicy, RetentionPolicy.off);
+        expect(result.preferenceOutcome, WriteOutcome.saved);
+        expect(result.cleanup, CleanupOutcome.confirmedAbsent);
+        expect(result.removedAndWillNotReturn, isTrue);
+        expect(store.rawContentPresence(), RawKeyPresence.absent);
+        expect(store.loadSettingsResult().settings.keepForNextTime, isFalse);
+      },
+    );
 
-    test('preference confirmed but data remaining makes no privacy claim',
-        () async {
-      await givenRetainedDocument();
-      backend.failDeletes.add(Store.documentKey);
+    test(
+      'preference confirmed but data remaining makes no privacy claim',
+      () async {
+        await givenRetainedDocument();
+        backend.failDeletes.add(Store.documentKey);
 
-      final result = await retention.disable(
-        current: const Settings(keepForNextTime: true),
-      );
+        final result = await retention.disable(
+          current: const Settings(keepForNextTime: true),
+        );
 
-      expect(result.preferenceConfirmed, isTrue);
-      expect(result.cleanup, CleanupOutcome.partiallyPresent);
-      expect(result.contentConfirmedAbsent, isFalse);
-      expect(result.removedAndWillNotReturn, isFalse);
-      expect(retention.offPolicyDataUnresolved, isTrue);
-    });
+        expect(result.preferenceConfirmed, isTrue);
+        expect(result.cleanup, CleanupOutcome.partiallyPresent);
+        expect(result.contentConfirmedAbsent, isFalse);
+        expect(result.removedAndWillNotReturn, isFalse);
+        expect(retention.offPolicyDataUnresolved, isTrue);
+      },
+    );
 
-    test('data absent but preference unconfirmed claims only the removal',
-        () async {
-      await givenRetainedDocument();
-      backend.failWrites.add(Store.settingsKey);
+    test(
+      'data absent but preference unconfirmed claims only the removal',
+      () async {
+        await givenRetainedDocument();
+        backend.failWrites.add(Store.settingsKey);
 
-      final result = await retention.disable(
-        current: const Settings(keepForNextTime: true),
-      );
+        final result = await retention.disable(
+          current: const Settings(keepForNextTime: true),
+        );
 
-      expect(result.preferenceOutcome, WriteOutcome.failed);
-      expect(result.contentConfirmedAbsent, isTrue);
-      expect(
-        result.removedAndWillNotReturn,
-        isFalse,
-        reason: 'the choice may not survive the next visit',
-      );
-      expect(
-        store.rawContentPresence(),
-        RawKeyPresence.absent,
-        reason: 'deletion is attempted regardless of the preference write',
-      );
-    });
+        expect(result.preferenceOutcome, WriteOutcome.failed);
+        expect(result.contentConfirmedAbsent, isTrue);
+        expect(
+          result.removedAndWillNotReturn,
+          isFalse,
+          reason: 'the choice may not survive the next visit',
+        );
+        expect(
+          store.rawContentPresence(),
+          RawKeyPresence.absent,
+          reason: 'deletion is attempted regardless of the preference write',
+        );
+      },
+    );
 
     test('both unconfirmed yields no success of any kind', () async {
       await givenRetainedDocument();
@@ -837,7 +925,10 @@ void main() {
       await givenRetainedDocument();
       await store.saveSettings(const Settings(keepForNextTime: true));
 
-      expect(await retention.removeSavedDocument(), CleanupOutcome.confirmedAbsent);
+      expect(
+        await retention.removeSavedDocument(),
+        CleanupOutcome.confirmedAbsent,
+      );
 
       expect(store.rawContentPresence(), RawKeyPresence.absent);
       expect(
@@ -848,35 +939,39 @@ void main() {
       expect(store.effectivePolicy, RetentionPolicy.on);
     });
 
-    test('a failed direct removal marks the data off-policy for later ON',
-        () async {
-      await givenRetainedDocument();
-      backend.failDeletes.add(Store.documentKey);
+    test(
+      'a failed direct removal marks the data off-policy for later ON',
+      () async {
+        await givenRetainedDocument();
+        backend.failDeletes.add(Store.documentKey);
 
-      expect(
-        await retention.removeSavedDocument(),
-        CleanupOutcome.partiallyPresent,
-      );
-      expect(retention.offPolicyDataUnresolved, isTrue);
-    });
+        expect(
+          await retention.removeSavedDocument(),
+          CleanupOutcome.partiallyPresent,
+        );
+        expect(retention.offPolicyDataUnresolved, isTrue);
+      },
+    );
 
-    test('unreadable-data recovery removes by key, not by decoded model',
-        () async {
-      backend.data[Store.documentKey] = 'not decodable';
-      backend.data[Store.positionKey] = 'also not decodable';
-      await retention.resolveStartup();
+    test(
+      'unreadable-data recovery removes by key, not by decoded model',
+      () async {
+        backend.data[Store.documentKey] = 'not decodable';
+        backend.data[Store.positionKey] = 'also not decodable';
+        await retention.resolveStartup();
 
-      // Startup already cleans this up under OFF; re-seed to exercise the
-      // recovery control on its own terms.
-      backend.data[Store.documentKey] = 'not decodable';
-      expect(store.loadDocument(), isNull);
+        // Startup already cleans this up under OFF; re-seed to exercise the
+        // recovery control on its own terms.
+        backend.data[Store.documentKey] = 'not decodable';
+        expect(store.loadDocument(), isNull);
 
-      expect(
-        await retention.removeUnreadableData(),
-        CleanupOutcome.confirmedAbsent,
-      );
-      expect(store.rawContentPresence(), RawKeyPresence.absent);
-    });
+        expect(
+          await retention.removeUnreadableData(),
+          CleanupOutcome.confirmedAbsent,
+        );
+        expect(store.rawContentPresence(), RawKeyPresence.absent);
+      },
+    );
 
     test('recovery does not change the retention preference', () async {
       await store.saveSettings(const Settings(keepForNextTime: true));

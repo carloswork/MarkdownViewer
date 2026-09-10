@@ -204,28 +204,34 @@ void main() {
 
   // --- DF-039 ---------------------------------------------------------------
 
-  test('content writes are suppressed against real storage while OFF', () async {
-    store.applyResolvedPolicy(RetentionPolicy.off);
+  test(
+    'content writes are suppressed against real storage while OFF',
+    () async {
+      store.applyResolvedPolicy(RetentionPolicy.off);
 
-    final document = MarkdownDocument.fromSource('# Not for next time');
-    expect(await store.saveDocument(document), WriteOutcome.suppressedByPolicy);
-    expect(
-      await store.savePosition(
-        ReadingPosition(
-          documentId: document.id,
-          blockIndex: 2,
-          fraction: 0,
-          savedAt: DateTime.now(),
+      final document = MarkdownDocument.fromSource('# Not for next time');
+      expect(
+        await store.saveDocument(document),
+        WriteOutcome.suppressedByPolicy,
+      );
+      expect(
+        await store.savePosition(
+          ReadingPosition(
+            documentId: document.id,
+            blockIndex: 2,
+            fraction: 0,
+            savedAt: DateTime.now(),
+          ),
         ),
-      ),
-      WriteOutcome.suppressedByPolicy,
-    );
+        WriteOutcome.suppressedByPolicy,
+      );
 
-    // The proof that matters is at the raw-key level, not the decoded one.
-    expect(store.rawKeyPresence(Store.documentKey), RawKeyPresence.absent);
-    expect(store.rawKeyPresence(Store.positionKey), RawKeyPresence.absent);
-    expect(store.rawContentPresence(), RawKeyPresence.absent);
-  });
+      // The proof that matters is at the raw-key level, not the decoded one.
+      expect(store.rawKeyPresence(Store.documentKey), RawKeyPresence.absent);
+      expect(store.rawKeyPresence(Store.positionKey), RawKeyPresence.absent);
+      expect(store.rawContentPresence(), RawKeyPresence.absent);
+    },
+  );
 
   test('settings still persist against real storage while OFF', () async {
     store.applyResolvedPolicy(RetentionPolicy.off);

@@ -33,6 +33,8 @@ class ReaderScreen extends StatefulWidget {
     required this.onEdit,
     required this.onLoadFile,
     required this.onReturnHome,
+    required this.onPositionChanged,
+    this.sessionPosition,
   });
 
   final MarkdownDocument document;
@@ -56,6 +58,18 @@ class ReaderScreen extends StatefulWidget {
   final VoidCallback onLoadFile;
 
   final VoidCallback onReturnHome;
+
+  /// Reports where reading reached, on the same debounce as the durable save.
+  ///
+  /// DF-039 needs this because a durable position write is suppressed while
+  /// retention is OFF, and `plan.md` §18.2 still requires returning Home in the
+  /// same page lifetime to offer a continue that lands where the reader was.
+  /// The app holds that position in memory; nothing here decides whether it is
+  /// also stored.
+  final ValueChanged<ReadingPosition> onPositionChanged;
+
+  /// Where this page lifetime last reached, when nothing durable was stored.
+  final ReadingPosition? sessionPosition;
 
   @override
   State<ReaderScreen> createState() => _ReaderScreenState();
@@ -82,7 +96,15 @@ class _ReaderScreenState extends State<ReaderScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _restore = store.loadPosition(widget.document.id);
+    // Durable first, then this page lifetime's in-memory position. Under OFF
+    // there is never a durable one, and under ON the durable one is the more
+    // authoritative of the two.
+    final session = widget.sessionPosition;
+    _restore =
+        store.loadPosition(widget.document.id) ??
+        (session != null && session.documentId == widget.document.id
+            ? session
+            : null);
     _positionsListener.itemPositions.addListener(_onPositionsChanged);
     _printSurfaceLease = mountPrintSurface(
       widget.document.source,
@@ -263,7 +285,9 @@ class _ReaderScreenState extends State<ReaderScreen>
     final position = _latest;
     if (position == null) return;
     _latest = null;
-    store.savePosition(position);
+    // Always reported; stored only if the retention gate allows it.
+    widget.onPositionChanged(position);
+    unawaited(store.savePosition(position));
   }
 
   String? _headingBefore(int blockIndex) {

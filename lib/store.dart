@@ -103,6 +103,29 @@ class Store implements RetentionStore {
 
   RetentionPolicy _policy = RetentionPolicy.off;
 
+  /// A document whose content writes are refused for the rest of this page
+  /// lifetime, because the user removed it.
+  ///
+  /// The generation fence cannot cover this on its own: a position write issued
+  /// *after* a removal is a new request, not a stale one, and the reader's
+  /// `dispose()` flush is exactly that - it fires when the removed document's
+  /// screen comes down, after the removal. Without this the flush would write
+  /// the removed document's reading place straight back (`plan.md` §20.3).
+  ///
+  /// One slot is enough because the product holds one document at a time, and a
+  /// replacement has a different id, so it is unaffected.
+  String? _suppressedDocumentId;
+
+  /// Whether content exists that no confirmed ON preference governs.
+  ///
+  /// Lives here rather than in the controller because it describes the state of
+  /// what is stored, not a decision about it, and because it must be reset when
+  /// storage is reopened. While true, retention cannot be enabled: D-010 forbids
+  /// persisting or confirming ON until the off-policy data is verifiably gone,
+  /// so that enabling retention can never quietly adopt content the user never
+  /// chose to keep.
+  bool _offPolicyDataUnresolved = false;
+
   /// False when the browser refused to open the box - Private Browsing being the
   /// realistic case. The app then runs entirely in memory rather than failing.
   bool get isAvailable => _backend?.isAvailable ?? false;
@@ -117,6 +140,14 @@ class Store implements RetentionStore {
 
   @override
   RetentionPolicy get effectivePolicy => _policy;
+
+  @override
+  bool get offPolicyDataUnresolved => _offPolicyDataUnresolved;
+
+  @override
+  void setOffPolicyDataUnresolved(bool value) {
+    _offPolicyDataUnresolved = value;
+  }
 
   /// Sets the policy in force for this page lifetime.
   ///
@@ -140,6 +171,8 @@ class Store implements RetentionStore {
     _contentGeneration = 0;
     _settingsGeneration = 0;
     _policy = RetentionPolicy.off;
+    _suppressedDocumentId = null;
+    _offPolicyDataUnresolved = false;
 
     if (backend != null) {
       _backend = backend;
@@ -165,7 +198,11 @@ class Store implements RetentionStore {
 
   @override
   Future<WriteOutcome> saveDocument(MarkdownDocument document) {
-    return _writeContent(documentKey, document.toJson());
+    return _writeContent(
+      documentKey,
+      document.toJson(),
+      documentId: document.id,
+    );
   }
 
   // --- Reading position -----------------------------------------------------
@@ -180,7 +217,11 @@ class Store implements RetentionStore {
 
   @override
   Future<WriteOutcome> savePosition(ReadingPosition position) {
-    return _writeContent(positionKey, position.toJson());
+    return _writeContent(
+      positionKey,
+      position.toJson(),
+      documentId: position.documentId,
+    );
   }
 
   // --- Raw presence and verified removal ------------------------------------
@@ -228,8 +269,9 @@ class Store implements RetentionStore {
   /// behind it - and is then deleted. Either way the verification at the end
   /// runs after every earlier operation has settled.
   @override
-  Future<CleanupOutcome> removeRetainedContent() {
+  Future<CleanupOutcome> removeRetainedContent({String? suppressDocumentId}) {
     _contentGeneration++;
+    if (suppressDocumentId != null) _suppressedDocumentId = suppressDocumentId;
     return _enqueue(_deleteAndVerify);
   }
 
@@ -246,8 +288,12 @@ class Store implements RetentionStore {
     // survives its only delete would report the same partial result as a
     // document that was removed while its position survived, which are
     // different facts about how much of the removal worked.
+    //
+    // A presence read that fails does not stop the delete. The read and the
+    // delete can fail independently, and a removal that gives up because it
+    // could not *look* first would leave data behind that a delete would have
+    // removed - which is exactly the state a retry exists to get out of.
     final before = _presentContentKeys();
-    if (before == null) return CleanupOutcome.indeterminate;
 
     for (final key in const [documentKey, positionKey]) {
       try {
@@ -265,7 +311,11 @@ class Store implements RetentionStore {
 
     if (after.isEmpty) return CleanupOutcome.confirmedAbsent;
     // Everything that was there is still there: the removal achieved nothing.
-    if (after.length == before.length) return CleanupOutcome.failed;
+    // When the first read failed there is no "before" to compare with, so no
+    // part of the removal can be claimed to have worked either.
+    if (before == null || after.length == before.length) {
+      return CleanupOutcome.failed;
+    }
     return CleanupOutcome.partiallyPresent;
   }
 
@@ -357,15 +407,25 @@ class Store implements RetentionStore {
   // --- Plumbing -------------------------------------------------------------
 
   /// Content writes: gated on policy at request time, fenced at run time.
-  Future<WriteOutcome> _writeContent(String key, Map<String, dynamic> value) {
+  Future<WriteOutcome> _writeContent(
+    String key,
+    Map<String, dynamic> value, {
+    String? documentId,
+  }) {
     if (_policy == RetentionPolicy.off) {
       return Future<WriteOutcome>.value(WriteOutcome.suppressedByPolicy);
+    }
+    if (documentId != null && documentId == _suppressedDocumentId) {
+      return Future<WriteOutcome>.value(WriteOutcome.superseded);
     }
     final generation = _contentGeneration;
     return _enqueue(() async {
       if (generation != _contentGeneration) return WriteOutcome.superseded;
       if (_policy == RetentionPolicy.off) {
         return WriteOutcome.suppressedByPolicy;
+      }
+      if (documentId != null && documentId == _suppressedDocumentId) {
+        return WriteOutcome.superseded;
       }
       return _put(key, value);
     });
