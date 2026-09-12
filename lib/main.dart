@@ -10,7 +10,7 @@ import 'models.dart';
 import 'paste_sheet.dart';
 import 'reader_screen.dart';
 import 'retention.dart';
-import 'settings_sheet.dart';
+import 'settings_screen.dart';
 import 'store.dart';
 
 Future<void> main() async {
@@ -73,6 +73,10 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   /// an automatic reader on launch.
   bool _atHome = true;
 
+  /// Whether Home is showing Settings. Set only from Home, and Settings only
+  /// ever returns there, so it has no meaning outside the Home route.
+  bool _atSettings = false;
+
   /// Where reading reached in this page lifetime, whether or not it was stored.
   ///
   /// Under OFF nothing durable is written, and §18.2 still requires returning
@@ -99,6 +103,11 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
 
   /// A retention operation is in flight.
   bool _busy = false;
+
+  /// An appearance change arrived while a retention operation was running.
+  /// It shows at once and is stored when the operation finishes, so it cannot
+  /// race the preference write that operation makes (D-013).
+  bool _settingsWriteDeferred = false;
 
   /// Messages are shown through this rather than through the ambient
   /// [ScaffoldMessenger]. This State sits *above* the [MaterialApp] that
@@ -231,8 +240,30 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   }
 
   void _onSettingsChanged(Settings settings) {
-    setState(() => _settings = settings);
-    unawaited(_persistSettings(settings));
+    // Appearance only. The retention choice changes through its own
+    // transition and nothing else: what arrives here comes from a snapshot the
+    // appearance controls took when they were built, which can predate the
+    // latest choice, and storing that snapshot's copy of it would leave the
+    // stored preference disagreeing with the policy the store enforces.
+    final next = _settings.copyWith(
+      appearance: settings.appearance,
+      fontScale: settings.fontScale,
+      wrapCode: settings.wrapCode,
+    );
+    setState(() => _settings = next);
+    if (_busy) {
+      _settingsWriteDeferred = true;
+      return;
+    }
+    unawaited(_persistSettings(next));
+  }
+
+  /// Stores an appearance change held back while a retention operation ran,
+  /// merged onto the settings as that operation left them.
+  void _persistDeferredSettings() {
+    if (!_settingsWriteDeferred) return;
+    _settingsWriteDeferred = false;
+    unawaited(_persistSettings(_settings));
   }
 
   /// Appearance settings are never gated on retention policy: they describe the
@@ -294,6 +325,7 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
       _alerts = _alertsFor(result);
       _busy = false;
     });
+    _persistDeferredSettings();
     _report(_messageFor(result));
   }
 
@@ -379,6 +411,7 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
         _alerts = [RetentionAlert.dataMayRemain];
       }
     });
+    _persistDeferredSettings();
     _report(
       outcome.isConfirmedAbsent
           ? 'Removed from this browser.'
@@ -412,6 +445,7 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
           ? const []
           : [RetentionAlert.dataMayRemain];
     });
+    _persistDeferredSettings();
     _report(
       outcome.isConfirmedAbsent
           ? 'Removed from this browser.'
@@ -474,6 +508,10 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   // --- Navigation -----------------------------------------------------------
 
   void _returnHome() => setState(() => _atHome = true);
+
+  void _openSettings() => setState(() => _atSettings = true);
+
+  void _closeSettings() => setState(() => _atSettings = false);
 
   /// Reopens the stored document. Nothing to reload: it never left the store,
   /// and the reader restores its own position on mount.
@@ -685,19 +723,27 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
           // route: stored data that cannot be opened has no reader to show, and
           // routing into one would be the reclassification D-010 forbids.
           if (_atHome || document == null || _inRecovery) {
+            // Settings is a Home state too: reached only from Home and
+            // returning only there, so the same rule routes it and recovery
+            // still wins over any reader route.
+            if (_atSettings) {
+              return SettingsScreen(
+                settings: _settings,
+                retention: _retentionHomeState,
+                onBack: _closeSettings,
+                onSettingsChanged: _onSettingsChanged,
+                onKeepForNextTimeChanged: _setKeepForNextTime,
+                onRemoveSavedDocument: () => _removeSavedDocument(context),
+                onRemoveRetainedData: () => _removeRetainedData(context),
+              );
+            }
             return HomeScreen(
               document: document,
               retention: _retentionHomeState,
               onContinue: _continueReading,
               onPaste: () => _pasteNewDocument(context),
               onLoadFile: () => _loadFromFile(context),
-              onOpenSettings: () => showSettingsSheet(
-                context,
-                settings: _settings,
-                onChanged: _onSettingsChanged,
-              ),
-              onKeepForNextTimeChanged: _setKeepForNextTime,
-              onRemoveSavedDocument: () => _removeSavedDocument(context),
+              onOpenSettings: _openSettings,
               onRemoveRetainedData: () => _removeRetainedData(context),
             );
           }

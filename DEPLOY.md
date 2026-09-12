@@ -143,8 +143,9 @@ Then open `http://<your-pc-ip>:8080` on the iPhone, on the same Wi-Fi. Allow the
 port through Windows Firewall the first time.
 
 IndexedDB works over plain HTTP, so the whole paste → read → leave → resume loop
-is testable this way. Only Service Workers require HTTPS, and they affect
-caching only.
+is testable this way — with *Keep for next time* switched on first, in Settings.
+It is off by default, and with it off a reload deliberately forgets the
+document. Only Service Workers require HTTPS, and they affect caching only.
 
 Note that a plain-HTTP LAN origin is **not a secure context**, so
 `navigator.clipboard` does not exist there and the code-block Copy button will

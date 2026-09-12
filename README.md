@@ -4,7 +4,8 @@ A calm, lightweight reader for long, structured Markdown documents.
 
 Markdown Viewer is a Flutter web application built for one job: reading a long
 technical document comfortably, on a phone or a desktop browser, and picking up
-where you left off. It is a reader, not an editor and not a Markdown IDE.
+where you left off — during the same visit, or on a later one if you choose to
+keep the document. It is a reader, not an editor and not a Markdown IDE.
 
 ## What it does
 
@@ -13,8 +14,11 @@ where you left off. It is a reader, not an editor and not a Markdown IDE.
 - **Paste Markdown text** directly, for content that is not in a file.
 - **Table-of-contents navigation.** Headings are extracted into a Contents
   sheet; tapping an entry jumps to that part of the document.
-- **Return to your reading position.** The position in the current document is
-  stored locally, so *Continue reading* returns you to where you stopped.
+- **Continue where you stopped.** Returning to the main screen keeps your place
+  in the current document for the rest of the visit. Turn on *Keep for next time*
+  in Settings to also store the document and your reading place in this
+  browser, so *Continue reading* is offered after you reopen the app. It is off
+  by default, and the Settings entry on the main screen says whether it is on.
 - **Appearance controls.** System / light / dark, an adjustable text size, and
   a choice of wrapping or horizontally scrolling long code lines.
 - **Syntax-highlighted code blocks** with a copy button. (Copying needs a
@@ -25,7 +29,7 @@ where you left off. It is a reader, not an editor and not a Markdown IDE.
 ## What it does not do
 
 There is no cloud sync, no account, no collaboration, and no server component.
-*Edit local copy* changes only the copy stored in this browser — it never writes
+*Edit local copy* changes only the copy held in this browser — it never writes
 back to the file you opened, and there is no save or export. Native desktop and
 mobile apps are not part of this project; it runs in the browser.
 
@@ -36,10 +40,24 @@ document content to a server.
 
 Supporting details, all verifiable in the source:
 
-- The document, your reading position and your appearance settings are stored in
-  the browser's local storage (IndexedDB, via Hive). If the browser refuses to
-  open that store — Private Browsing, for instance — the app runs in memory only
-  rather than failing.
+- Your appearance settings, including the *Keep for next time* choice, are stored
+  in the browser's local storage (IndexedDB, via Hive). The document and your
+  reading position are stored there **only while *Keep for next time* is on**.
+  With it off they are held in memory and are gone when the page is reloaded or
+  closed.
+- Turning *Keep for next time* off, or choosing *Remove saved document*, deletes
+  the stored document and reading position. The app says they were removed only
+  after checking they are gone, and says so plainly when it cannot confirm that.
+- Browser storage belongs to the browser: you can clear it, and the browser may
+  evict it, so a kept document is a convenience rather than a backup. Private
+  browsing is not a way to keep a document for next time: what is stored there
+  can be gone as soon as the private tab or window is closed. If the browser
+  refuses to open storage at all, nothing is kept and the app runs in memory
+  only rather than failing.
+- Earlier versions kept the last document automatically. Because *Keep for next
+  time* starts off, a document kept that way is removed the first time this
+  version starts; if the removal cannot be confirmed, the app says so and offers
+  to remove it again.
 - **Remote images referenced by a document are not fetched.** `![](https://…)`
   renders as a placeholder showing the URL; opening it is a deliberate tap.
 - Links are handed to the browser to open in a new tab; the app makes no request

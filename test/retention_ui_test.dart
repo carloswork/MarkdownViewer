@@ -1,10 +1,12 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:markdown_viewer/main.dart';
 import 'package:markdown_viewer/models.dart';
 import 'package:markdown_viewer/retention.dart';
+import 'package:markdown_viewer/settings_screen.dart';
 import 'package:markdown_viewer/store.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
@@ -101,22 +103,44 @@ void main() {
     );
   }
 
+  /// Turns the choice over, from Home or from Settings.
+  ///
+  /// The choice lives on Settings. Started from Home, this goes there and comes
+  /// back, so the Home assertions that follow are still about Home.
   Future<void> toggleKeep(WidgetTester tester) async {
-    await tester.ensureVisible(find.text('Keep for next time'));
-    await tester.tap(find.byType(Switch));
+    final fromHome = !onSettings();
+    await openSettings(tester);
+    await tester.ensureVisible(keepSwitch());
+    await tester.tap(keepSwitch());
     await settle(tester);
+    if (fromHome) await closeSettings(tester);
   }
 
+  /// Confirms a removal. `Remove saved document` lives on Settings, so from
+  /// Home this goes there and comes back; the recovery control is used where
+  /// the test already is, because Home and Settings both carry it.
   Future<void> confirmRemoval(WidgetTester tester, String action) async {
+    final viaSettings = action == 'Remove saved document' && !onSettings();
+    if (viaSettings) await openSettings(tester);
     await tester.ensureVisible(find.text(action));
     await tester.tap(find.text(action));
     await settle(tester);
     await tester.tap(find.widgetWithText(FilledButton, 'Remove'));
     await settle(tester);
+    if (viaSettings) await closeSettings(tester);
   }
 
-  bool switchIsOn() =>
-      (find.byType(Switch).evaluate().single.widget as Switch).value;
+  /// Whether the choice is shown as on: the switch itself on Settings, or the
+  /// Settings entry on Home, which must state it exactly once.
+  bool switchIsOn() {
+    if (onSettings()) {
+      return (keepSwitch().evaluate().single.widget as Switch).value;
+    }
+    final on = find.text('Keep for next time is on').evaluate().length;
+    final off = find.text('Keep for next time is off').evaluate().length;
+    expect(on + off, 1, reason: 'Home states the choice exactly once');
+    return on == 1;
+  }
 
   group('startup matrix', () {
     testWidgets('a fresh profile lands on an empty Home with the choice off', (
@@ -127,6 +151,10 @@ void main() {
       expect(startup.effectivePolicy, RetentionPolicy.off);
       expect(find.text('Load from file'), findsOneWidget);
       expect(find.text('Continue reading'), findsNothing);
+      // Default OFF is visible on Home itself, before any document exists,
+      // not only one screen away.
+      expect(find.text('Keep for next time is off'), findsOneWidget);
+      await openSettings(tester);
       expect(find.text('Keep for next time'), findsOneWidget);
       expect(switchIsOn(), isFalse, reason: 'default OFF must be visible');
     });
@@ -305,6 +333,7 @@ void main() {
 
       // The control is not merely ignored - it is visibly unavailable, and the
       // subtitle says why, so the block is explained rather than mysterious.
+      await openSettings(tester);
       expect(switchIsOn(), isFalse);
       expect(
         find.textContaining('Unavailable until saved reading data is removed'),
@@ -576,6 +605,7 @@ void main() {
       seedRetained();
       await launch(tester);
 
+      await openSettings(tester);
       await tester.ensureVisible(find.text('Remove saved document'));
       await tester.tap(find.text('Remove saved document'));
       await settle(tester);
@@ -583,6 +613,8 @@ void main() {
       await settle(tester);
 
       expect(store.rawKeyPresence(Store.documentKey), RawKeyPresence.present);
+      expect(find.text('Remove saved document'), findsOneWidget);
+      await closeSettings(tester);
       expect(find.text('Continue reading'), findsOneWidget);
     });
 
@@ -592,6 +624,7 @@ void main() {
       seedRetained();
       await launch(tester);
 
+      await openSettings(tester);
       await tester.ensureVisible(find.text('Remove saved document'));
       await tester.tap(find.text('Remove saved document'));
       await settle(tester);
@@ -840,6 +873,7 @@ void main() {
         find.text('Latest changes not saved in this browser'),
         findsOneWidget,
       );
+      await openSettings(tester);
       expect(
         find.text('Remove saved document'),
         findsOneWidget,
@@ -982,16 +1016,25 @@ void main() {
         'work', (tester) async {
       await launch(tester, using: UnavailableBackend());
 
-      expect(find.textContaining('not letting Saudo store data'), findsWidgets);
+      expect(
+        find.textContaining('not allowing this site to store data'),
+        findsWidgets,
+      );
+      expect(find.text('Keep for next time is unavailable'), findsOneWidget);
+      expect(find.textContaining('Try removing it again'), findsNothing);
+      expect(find.text('Remove unreadable saved data'), findsNothing);
+
+      await openSettings(tester);
       expect(find.textContaining('Try removing it again'), findsNothing);
       expect(find.text('Remove unreadable saved data'), findsNothing);
       expect(find.text('Remove saved document'), findsNothing);
       expect(switchIsOn(), isFalse);
       expect(
-        (find.byType(Switch).evaluate().single.widget as Switch).onChanged,
+        (keepSwitch().evaluate().single.widget as Switch).onChanged,
         isNull,
         reason: 'nothing can be kept, so the choice cannot be turned on',
       );
+      await closeSettings(tester);
 
       await pasteDocument(tester);
       await returnHome(tester);
@@ -1087,12 +1130,117 @@ void main() {
     });
   });
 
+  group('carried combinations', () {
+    testWidgets('neither the OFF choice nor the removal confirmed says both', (
+      tester,
+    ) async {
+      useTallViewport(tester);
+      seedRetained();
+      await launch(tester);
+
+      backend.failWrites.add(Store.settingsKey);
+      backend.failDeletes.addAll([Store.documentKey, Store.positionKey]);
+      await toggleKeep(tester);
+
+      expect(find.text('Removed from this browser.'), findsNothing);
+      expect(
+        find.text('Saved reading data could not be removed.'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'may still remain in this browser, and your choice',
+        ),
+        findsOneWidget,
+        reason: 'preference and data uncertainty are reported together',
+      );
+      expect(
+        switchIsOn(),
+        isFalse,
+        reason: 'session behaviour goes off whether or not anything confirmed',
+      );
+      expect(find.text('Remove unreadable saved data'), findsOneWidget);
+      expect(store.rawContentPresence(), RawKeyPresence.present);
+    });
+
+    testWidgets('an unreadable choice and removed legacy data are both '
+        'reported', (tester) async {
+      backend.data[Store.settingsKey] = 'not json at all';
+      backend.data[Store.documentKey] = jsonEncode(sampleDocument().toJson());
+      backend.data[Store.positionKey] = jsonEncode(
+        ReadingPosition(
+          documentId: 'doc-1',
+          blockIndex: 2,
+          fraction: 0,
+          savedAt: DateTime.now(),
+        ).toJson(),
+      );
+
+      final startup = await launch(tester);
+
+      expect(startup.preferenceUncertain, isTrue);
+      expect(startup.cleanup, CleanupOutcome.confirmedAbsent);
+      expect(
+        find.textContaining('saved choice could not be read'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Previously saved reading data was removed'),
+        findsOneWidget,
+      );
+      expect(find.text('Continue reading'), findsNothing);
+      expect(find.text('notes.md'), findsNothing);
+      expect(store.rawContentPresence(), RawKeyPresence.absent);
+    });
+
+    testWidgets('the newer retention states promise nothing they cannot keep', (
+      tester,
+    ) async {
+      useTallViewport(tester);
+
+      // No storage at all: the storage alert and the disabled-choice subtitle.
+      await launch(tester, using: UnavailableBackend());
+      expect(
+        find.textContaining('not allowing this site to store data'),
+        findsWidgets,
+      );
+      expectNoForbiddenPromises();
+      await openSettings(tester);
+      expectNoForbiddenPromises();
+
+      // A retained document whose latest edit did not save.
+      backend = FakeBackend();
+      seedRetained();
+      await launch(tester);
+      await tester.tap(find.text('Continue reading'));
+      await settle(tester);
+      backend.failWrites.add(Store.documentKey);
+      await editDocumentTo(tester, '# Edited notes\n\nNew body.');
+      await returnHome(tester);
+      expect(
+        find.text('Latest changes not saved in this browser'),
+        findsOneWidget,
+      );
+      expectNoForbiddenPromises();
+
+      // Neither the OFF choice nor the removal confirmed.
+      backend.failWrites
+        ..clear()
+        ..add(Store.settingsKey);
+      backend.failDeletes.addAll([Store.documentKey, Store.positionKey]);
+      await toggleKeep(tester);
+      expect(find.textContaining('your choice may not apply'), findsOneWidget);
+      expectNoForbiddenPromises();
+    });
+  });
+
   group('accessibility and layout', () {
     testWidgets('the choice and both removals are reachable by semantics', (
       tester,
     ) async {
       seedRetained();
       await launch(tester);
+      await openSettings(tester);
 
       final handle = tester.ensureSemantics();
 
@@ -1104,7 +1252,7 @@ void main() {
       // The helper text is part of the control's own announcement, so what the
       // choice does is read out with it rather than being stranded as prose the
       // user has to find separately.
-      final choice = tester.getSemantics(find.byType(Switch));
+      final choice = tester.getSemantics(keepSwitch());
       expect(choice.label, contains('Keep for next time'));
       expect(
         choice.label,
@@ -1121,7 +1269,7 @@ void main() {
       // And the choice is genuinely operable, not merely labelled. Asserted
       // last, because turning it off correctly takes the removal control away
       // with it - there is no saved document left to remove.
-      await tester.tap(find.byType(Switch));
+      await tester.tap(keepSwitch());
       await settle(tester);
       expect(switchIsOn(), isFalse);
       expect(find.text('Remove saved document'), findsNothing);
@@ -1146,7 +1294,8 @@ void main() {
       expect(recovery.hint, contains('Removes saved data from this browser'));
 
       // And the disabled choice explains itself rather than simply not working.
-      final choice = tester.getSemantics(find.byType(Switch));
+      await openSettings(tester);
+      final choice = tester.getSemantics(keepSwitch());
       expect(
         choice.label,
         contains('Unavailable until saved reading data is removed'),
@@ -1158,9 +1307,8 @@ void main() {
     testWidgets('Home fits a small phone viewport without overflowing', (
       tester,
     ) async {
-      // The narrowest case that matters: a retained document, so Home is
-      // carrying its heaviest load - continue, both load actions, the choice
-      // and the destructive removal - on a 360x640 screen.
+      // The narrowest case that matters: a retained document, so Home and
+      // Settings each carry their heaviest load on a 360x640 screen.
       tester.view.physicalSize = const Size(360, 640);
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.reset);
@@ -1169,13 +1317,17 @@ void main() {
       await launch(tester);
 
       expect(tester.takeException(), isNull);
-      expect(find.text('Keep for next time'), findsOneWidget);
       expect(find.text('Continue reading'), findsOneWidget);
+      expect(find.text('Keep for next time is on'), findsOneWidget);
+
+      await openSettings(tester);
+      expect(tester.takeException(), isNull);
+      expect(find.text('Keep for next time'), findsOneWidget);
+      expect(find.text('Remove saved document'), findsOneWidget);
     });
 
-    testWidgets('every Home control stays reachable on a small phone', (
-      tester,
-    ) async {
+    testWidgets('every Home and Settings control stays reachable on a small '
+        'phone', (tester) async {
       tester.view.physicalSize = const Size(360, 640);
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.reset);
@@ -1189,14 +1341,326 @@ void main() {
         'Continue reading',
         'Load from file',
         'Paste Markdown',
+        'Settings',
+      ]) {
+        await tester.ensureVisible(find.text(control));
+        await settle(tester);
+        expect(find.text(control), findsOneWidget, reason: control);
+      }
+
+      await openSettings(tester);
+      for (final control in const [
         'Keep for next time',
         'Remove saved document',
+        'Wrap long code lines',
       ]) {
         await tester.ensureVisible(find.text(control));
         await settle(tester);
         expect(find.text(control), findsOneWidget, reason: control);
       }
       expect(tester.takeException(), isNull);
+    });
+
+    // plan.md §23 item 16 requires the controls to be keyboard-discoverable,
+    // not only reachable by pointer and announced to a screen reader. These
+    // drive the real app through the keyboard alone: no `tap`, no
+    // `ensureVisible`, no direct focus request.
+    testWidgets('the Settings entry is reached and opened by keyboard', (
+      tester,
+    ) async {
+      useTallViewport(tester);
+      await launch(tester);
+
+      await tabTo(
+        tester,
+        actionNamed('Settings'),
+        description: "Home's Settings entry",
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await settle(tester);
+
+      expect(onSettings(), isTrue, reason: 'the key press opened Settings');
+    });
+
+    testWidgets('the choice is reached and turned over by keyboard', (
+      tester,
+    ) async {
+      useTallViewport(tester);
+      await launch(tester);
+      await openSettings(tester);
+      expect(switchIsOn(), isFalse);
+
+      // Material focuses the switch's whole tile rather than the switch inside
+      // it, and activating that tile is what turns the choice over.
+      await tabTo(
+        tester,
+        (widget) => widget is SwitchListTile,
+        description: 'the Keep for next time switch tile',
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await settle(tester);
+
+      // The same state change the pointer path asserts, on screen and stored.
+      expect(switchIsOn(), isTrue);
+      expect(store.loadSettingsResult().settings.keepForNextTime, isTrue);
+      expect(store.effectivePolicy, RetentionPolicy.on);
+    });
+
+    testWidgets('the saved-document removal is reached and confirmed by '
+        'keyboard', (tester) async {
+      useTallViewport(tester);
+      seedRetained();
+      await launch(tester);
+      await openSettings(tester);
+
+      await tabTo(
+        tester,
+        actionNamed('Remove saved document'),
+        description: 'Remove saved document',
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await settle(tester);
+
+      // The destructive action still asks first, exactly as it does by touch.
+      expect(find.text('Remove saved document?'), findsOneWidget);
+      await tester.tap(find.widgetWithText(FilledButton, 'Remove'));
+      await settle(tester);
+
+      expect(store.rawContentPresence(), RawKeyPresence.absent);
+      expect(switchIsOn(), isTrue, reason: 'removal leaves the choice alone');
+    });
+  });
+
+  group('settings', () {
+    testWidgets('Home carries the load actions and a Settings entry, not the '
+        'choice or the removal', (tester) async {
+      useTallViewport(tester);
+      seedRetained();
+      await launch(tester);
+
+      expect(find.text('Continue reading'), findsOneWidget);
+      expect(find.text('Settings'), findsOneWidget);
+      expect(find.byType(Switch), findsNothing);
+      expect(find.text('Keep for next time'), findsNothing);
+      expect(find.text('Remove saved document'), findsNothing);
+      expect(
+        tester.getTopLeft(find.text('Paste Markdown')).dy,
+        lessThan(tester.getTopLeft(find.text('Settings')).dy),
+        reason: 'the document actions come first',
+      );
+    });
+
+    testWidgets('Settings opens from Home and Back returns there', (
+      tester,
+    ) async {
+      useTallViewport(tester);
+      seedRetained();
+      await launch(tester);
+
+      await openSettings(tester);
+      expect(find.text('Reading data'), findsOneWidget);
+      expect(find.text('Keep for next time'), findsOneWidget);
+      expect(find.text('Remove saved document'), findsOneWidget);
+      expect(find.text('Appearance'), findsOneWidget);
+      expect(find.text('Load from file'), findsNothing);
+
+      await closeSettings(tester);
+      expect(find.text('Load from file'), findsOneWidget);
+      expect(
+        find.text('Continue reading'),
+        findsOneWidget,
+        reason: 'visiting Settings leaves the document where it was',
+      );
+    });
+
+    testWidgets('the Settings entry announces the state of the choice', (
+      tester,
+    ) async {
+      useTallViewport(tester);
+      await launch(tester);
+      final handle = tester.ensureSemantics();
+
+      expect(
+        tester.getSemantics(annotationFor('Settings')).hint,
+        contains('Keep for next time is off'),
+      );
+
+      await toggleKeep(tester);
+      expect(
+        tester.getSemantics(annotationFor('Settings')).hint,
+        contains('Keep for next time is on'),
+      );
+
+      handle.dispose();
+    });
+
+    testWidgets('Settings keeps the caveat and drops the long prose', (
+      tester,
+    ) async {
+      useTallViewport(tester);
+      await launch(tester);
+      await openSettings(tester);
+
+      // The switch's own helper says what the choice does.
+      expect(
+        find.textContaining(
+          'Store this document and your reading place in this browser',
+        ),
+        findsOneWidget,
+      );
+      // Beneath it, only the part the helper cannot carry: browser-local and
+      // browser-owned.
+      expect(find.textContaining('Nothing is uploaded'), findsOneWidget);
+      expect(
+        find.textContaining('the browser can clear it on its own'),
+        findsOneWidget,
+      );
+      // Run 3 step 8: the ON/OFF prose is gone, and stays gone. On a small
+      // phone it pushed the rest of Settings past the first screen.
+      expect(find.textContaining('reloaded or closed'), findsNothing);
+      expect(find.textContaining('When it is on'), findsNothing);
+      expect(find.textContaining('Turning it off removes them'), findsNothing);
+      expectNoForbiddenPromises();
+    });
+
+    testWidgets('removing the saved document from Settings stays there and '
+        'leaves the choice on', (tester) async {
+      useTallViewport(tester);
+      seedRetained();
+      await launch(tester);
+      await openSettings(tester);
+
+      await confirmRemoval(tester, 'Remove saved document');
+
+      expect(onSettings(), isTrue);
+      expect(find.text('Removed from this browser.'), findsOneWidget);
+      expect(find.text('Remove saved document'), findsNothing);
+      expect(switchIsOn(), isTrue);
+      expect(store.rawContentPresence(), RawKeyPresence.absent);
+    });
+
+    testWidgets('no user-facing text names Saudo, in any retention state', (
+      tester,
+    ) async {
+      useTallViewport(tester);
+
+      void expectNoProductName(String state) {
+        expect(
+          find.textContaining('Saudo', findRichText: true),
+          findsNothing,
+          reason: '$state: "Saudo" is not an official product name',
+        );
+      }
+
+      Future<void> check(String state) async {
+        expectNoProductName('$state, Home');
+        await openSettings(tester);
+        expectNoProductName('$state, Settings');
+        await closeSettings(tester);
+      }
+
+      await launch(tester);
+      await check('fresh profile');
+
+      backend = FakeBackend();
+      seedRetained();
+      await launch(tester);
+      await check('retained document');
+
+      backend = FakeBackend();
+      seedLegacy();
+      backend.failDeletes.add(Store.documentKey);
+      await launch(tester);
+      await check('unresolved saved data');
+
+      await launch(tester, using: UnavailableBackend());
+      await check('no storage');
+    });
+  });
+
+  group('appearance never writes back the retention choice', () {
+    testWidgets('turning the choice on and then changing appearance keeps it '
+        'on', (tester) async {
+      useTallViewport(tester);
+      await launch(tester);
+      // Settings builds its appearance controls now, while the choice is off,
+      // so their copy of the settings says off from here on.
+      await openSettings(tester);
+
+      await toggleKeep(tester);
+      expect(switchIsOn(), isTrue);
+      await tester.ensureVisible(find.text('Light'));
+      await tester.tap(find.text('Light'));
+      await settle(tester);
+      await store.settlePendingOperations();
+
+      final stored = store.loadSettingsResult().settings;
+      expect(stored.appearance, AppearanceMode.light);
+      expect(
+        stored.keepForNextTime,
+        isTrue,
+        reason: 'the controls\' stale copy of the choice must not be stored',
+      );
+
+      await relaunch(tester);
+      expect(switchIsOn(), isTrue);
+    });
+
+    testWidgets('turning the choice off and then changing appearance keeps it '
+        'off', (tester) async {
+      useTallViewport(tester);
+      seedRetained();
+      await launch(tester);
+      await openSettings(tester);
+
+      await toggleKeep(tester);
+      expect(find.text('Removed from this browser.'), findsOneWidget);
+      await tester.ensureVisible(find.text('Dark'));
+      await tester.tap(find.text('Dark'));
+      await settle(tester);
+      await store.settlePendingOperations();
+
+      final stored = store.loadSettingsResult().settings;
+      expect(stored.appearance, AppearanceMode.dark);
+      expect(
+        stored.keepForNextTime,
+        isFalse,
+        reason: 'a stale ON would retain the next visit\'s document unasked',
+      );
+
+      await relaunch(tester);
+      expect(switchIsOn(), isFalse);
+      expect(find.text('Continue reading'), findsNothing);
+    });
+
+    testWidgets('an appearance change made while the choice is being saved is '
+        'stored after it, with the choice', (tester) async {
+      useTallViewport(tester);
+      await launch(tester);
+      await openSettings(tester);
+
+      // Hold the preference write open, so the appearance change arrives while
+      // the transition is still running.
+      final hold = backend.stall(Store.settingsKey);
+      await tester.ensureVisible(keepSwitch());
+      await tester.tap(keepSwitch());
+      await tester.pump();
+      await tester.ensureVisible(find.text('Dark'));
+      await tester.tap(find.text('Dark'));
+      await tester.pump();
+
+      hold.complete();
+      await settle(tester);
+      await store.settlePendingOperations();
+
+      final stored = store.loadSettingsResult().settings;
+      expect(stored.keepForNextTime, isTrue);
+      expect(
+        stored.appearance,
+        AppearanceMode.dark,
+        reason: 'the held-back appearance change is not lost either',
+      );
+      expect(switchIsOn(), isTrue);
     });
   });
 
@@ -1226,6 +1690,11 @@ void main() {
           reason: 'D-015 forbids promising "$forbidden"',
         );
       }
+
+      // The longer explanation lives on Settings, so it is held to the same
+      // rule.
+      await openSettings(tester);
+      expectNoForbiddenPromises();
     });
   });
 }
@@ -1244,6 +1713,74 @@ Finder annotationFor(String label) => find.byWidgetPredicate(
   (w) => w is Semantics && w.properties.label == label,
   description: 'Semantics(label: "$label")',
 );
+
+/// Whether the focused element sits inside a widget matching [predicate].
+///
+/// Walks up from the focus node's own context, because the node a control
+/// focuses is inside it: an `InkWell`'s focus sits under the `Semantics`
+/// annotation that names the action, and a `Switch`'s sits under the `Switch`.
+bool focusedInside(bool Function(Widget) predicate) {
+  final context = FocusManager.instance.primaryFocus?.context;
+  if (context is! Element) return false;
+  var found = predicate(context.widget);
+  context.visitAncestorElements((ancestor) {
+    if (predicate(ancestor.widget)) found = true;
+    return !found;
+  });
+  return found;
+}
+
+/// Presses Tab until the focus is inside a widget matching [predicate].
+///
+/// Fails rather than returning quietly: a control the keyboard never reaches
+/// is exactly what plan.md §23 item 16 forbids.
+Future<void> tabTo(
+  WidgetTester tester,
+  bool Function(Widget) predicate, {
+  required String description,
+  int maxPresses = 30,
+}) async {
+  for (var press = 0; press < maxPresses; press++) {
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pump();
+    if (focusedInside(predicate)) return;
+  }
+  fail('focus never reached $description in $maxPresses tab presses');
+}
+
+/// An action card, identified by the label its own `Semantics` declares.
+bool Function(Widget) actionNamed(String label) =>
+    (widget) => widget is Semantics && widget.properties.label == label;
+
+/// The `Keep for next time` switch, found through its own tile: Settings has a
+/// second switch, for wrapping code.
+Finder keepSwitch() => find.descendant(
+  of: find.widgetWithText(SwitchListTile, 'Keep for next time'),
+  matching: find.byType(Switch),
+);
+
+bool onSettings() => find.byType(SettingsScreen).evaluate().isNotEmpty;
+
+Future<void> openSettings(WidgetTester tester) async {
+  if (onSettings()) return;
+  // The Settings entry is the last action on Home, where a result message can
+  // sit over it; clear that first, as `returnHome` does for the reader menu.
+  tester.state<ScaffoldMessengerState>(find.byType(ScaffoldMessenger).first)
+    ..clearSnackBars()
+    ..removeCurrentSnackBar();
+  await tester.pump();
+  await tester.ensureVisible(find.text('Settings'));
+  await settle(tester);
+  await tester.tap(find.text('Settings'));
+  await settle(tester);
+  expect(onSettings(), isTrue, reason: 'Settings did not open');
+}
+
+Future<void> closeSettings(WidgetTester tester) async {
+  if (!onSettings()) return;
+  await tester.tap(find.byTooltip('Back'));
+  await settle(tester);
+}
 
 Future<void> settle(WidgetTester tester) async {
   await tester.pump();
@@ -1268,6 +1805,37 @@ Future<void> pasteDocument(
   await settle(tester);
   await tester.tap(find.widgetWithText(TextButton, 'Open'));
   await settle(tester);
+}
+
+/// Words D-015 forbids the retention surface from promising.
+const List<String> forbiddenPromises = [
+  'permanent',
+  'permanently',
+  'forever',
+  'backup',
+  'backed up',
+  'sync',
+  'synced',
+  'cloud',
+  'securely',
+  'secure erase',
+  'guaranteed',
+];
+
+/// Scans everything currently built for a forbidden promise.
+///
+/// Separate from the original terminology test, which scans only a retained
+/// document's Home: the storage-unavailable, out-of-date and unresolved states
+/// carry their own copy, and a rule that is only enforced where it was first
+/// written erodes wherever it was not.
+void expectNoForbiddenPromises() {
+  for (final forbidden in forbiddenPromises) {
+    expect(
+      find.textContaining(forbidden, findRichText: true),
+      findsNothing,
+      reason: 'D-015 forbids promising "$forbidden"',
+    );
+  }
 }
 
 String longSource() => List.generate(

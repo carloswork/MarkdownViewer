@@ -76,8 +76,6 @@ void main() {
             onPaste: () {},
             onLoadFile: () {},
             onOpenSettings: () {},
-            onKeepForNextTimeChanged: (_) {},
-            onRemoveSavedDocument: () {},
             onRemoveRetainedData: () {},
           ),
         ),
@@ -108,8 +106,6 @@ void main() {
             onPaste: () {},
             onLoadFile: () {},
             onOpenSettings: () {},
-            onKeepForNextTimeChanged: (_) {},
-            onRemoveSavedDocument: () {},
             onRemoveRetainedData: () {},
           ),
         ),
@@ -134,8 +130,6 @@ void main() {
             onPaste: () {},
             onLoadFile: () {},
             onOpenSettings: () {},
-            onKeepForNextTimeChanged: (_) {},
-            onRemoveSavedDocument: () {},
             onRemoveRetainedData: () {},
           ),
         ),
@@ -144,7 +138,9 @@ void main() {
       expect(find.text('Pasted document'), findsOneWidget);
     });
 
-    testWidgets('actions are ordered continue, load, paste', (tester) async {
+    testWidgets('actions are ordered continue, load, paste, settings', (
+      tester,
+    ) async {
       // Round 2: Load from file is the practical way to open a long document,
       // especially on a phone, so it sits above Paste. Ordering is exactly the
       // kind of thing a later edit silently undoes.
@@ -162,8 +158,6 @@ void main() {
             onPaste: () {},
             onLoadFile: () {},
             onOpenSettings: () {},
-            onKeepForNextTimeChanged: (_) {},
-            onRemoveSavedDocument: () {},
             onRemoveRetainedData: () {},
           ),
         ),
@@ -173,8 +167,13 @@ void main() {
       final loadY = tester.getTopLeft(find.text('Load from file')).dy;
       final pasteY = tester.getTopLeft(find.text('Paste Markdown')).dy;
 
+      final settingsY = tester.getTopLeft(find.text('Settings')).dy;
+
       expect(continueY, lessThan(loadY));
       expect(loadY, lessThan(pasteY));
+      // DF-039: Settings holds what is set once and left alone, so it follows
+      // the document actions.
+      expect(pasteY, lessThan(settingsY));
     });
 
     testWidgets('without a document, load still sits above paste', (
@@ -194,8 +193,6 @@ void main() {
             onPaste: () {},
             onLoadFile: () {},
             onOpenSettings: () {},
-            onKeepForNextTimeChanged: (_) {},
-            onRemoveSavedDocument: () {},
             onRemoveRetainedData: () {},
           ),
         ),
@@ -211,6 +208,7 @@ void main() {
       var continued = 0;
       var pasted = 0;
       var loaded = 0;
+      var opened = 0;
 
       await tester.pumpWidget(
         host(
@@ -225,9 +223,7 @@ void main() {
             onContinue: () => continued++,
             onPaste: () => pasted++,
             onLoadFile: () => loaded++,
-            onOpenSettings: () {},
-            onKeepForNextTimeChanged: (_) {},
-            onRemoveSavedDocument: () {},
+            onOpenSettings: () => opened++,
             onRemoveRetainedData: () {},
           ),
         ),
@@ -236,11 +232,14 @@ void main() {
       await tester.tap(find.text('Continue reading'));
       await tester.tap(find.text('Paste Markdown'));
       await tester.tap(find.text('Load from file'));
+      await tester.ensureVisible(find.text('Settings'));
+      await tester.tap(find.text('Settings'));
       await tester.pump();
 
       expect(continued, 1);
       expect(pasted, 1);
       expect(loaded, 1);
+      expect(opened, 1);
     });
   });
 
