@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.2.0 — 2026-09-12
+
+- Added a Settings screen, reached from the main screen, holding the appearance options and the new controls for documents kept in this browser.
+- Added a Keep for next time choice. When it is on, the current document and your reading place are stored in this browser so you can continue after reopening. It is off by default, and while it is off a loaded document is kept only for the current visit and is not offered again after you reload or close the page.
+- Added Remove saved document, which deletes the stored document and reading place from this browser and reports success only after confirming they are gone. A separate recovery action removes stored reading data that can no longer be read.
+- Documents that earlier versions kept in this browser automatically are removed the first time this version starts, because Keep for next time is off by default. A pasted document that existed only in browser storage cannot be recovered afterwards. If the removal cannot be confirmed, the app says so and offers to try again.
+- Saving your choice, saving a document and removing stored data are now reported separately, and each is reported only when it actually succeeded. Nothing is described as removed until its removal has been confirmed. Browser storage remains a convenience rather than a backup: you can clear it, and the browser may evict it.
+
 ## v1.1.0 — 2026-09-05
 
 - Added bundled local Traditional and Simplified Chinese rendering support with automatic detection and a manual Language override.
