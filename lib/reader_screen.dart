@@ -3,18 +3,23 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:markdown_widget/markdown_widget.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
+import 'document_search.dart';
 import 'han_script.dart';
 import 'links.dart';
 import 'markdown_theme.dart';
 import 'models.dart';
 import 'print_surface.dart';
 import 'script_rendering_sheet.dart';
+import 'search_surface.dart';
 import 'settings_sheet.dart';
 import 'store.dart';
 import 'toc_sheet.dart';
+
+enum _SearchFocusRole { field, result, previous, next, close, locator, reopen }
 
 /// The reading surface.
 ///
@@ -35,6 +40,7 @@ class ReaderScreen extends StatefulWidget {
     required this.onReturnHome,
     required this.onPositionChanged,
     this.sessionPosition,
+    this.onSearchIndexBuilt,
   });
 
   final MarkdownDocument document;
@@ -71,6 +77,9 @@ class ReaderScreen extends StatefulWidget {
   /// Where this page lifetime last reached, when nothing durable was stored.
   final ReadingPosition? sessionPosition;
 
+  /// Test/evidence seam for proving lazy construction and resize reuse.
+  final VoidCallback? onSearchIndexBuilt;
+
   @override
   State<ReaderScreen> createState() => _ReaderScreenState();
 }
@@ -91,6 +100,40 @@ class _ReaderScreenState extends State<ReaderScreen>
 
   bool _controlsVisible = true;
   late PrintSurfaceLease _printSurfaceLease;
+
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _menuFocusNode = FocusNode(debugLabel: 'Reader menu');
+  final FocusNode _searchFieldFocusNode = FocusNode(debugLabel: 'Search field');
+  final FocusNode _searchResultFocusNode = FocusNode(
+    debugLabel: 'Search result',
+  );
+  final FocusNode _searchResultListFocusNode = FocusNode(
+    debugLabel: 'Search results',
+  );
+  final FocusNode _searchReopenFocusNode = FocusNode(
+    debugLabel: 'Show search results',
+  );
+  final FocusNode _searchPreviousFocusNode = FocusNode(
+    debugLabel: 'Previous result',
+  );
+  final FocusNode _searchNextFocusNode = FocusNode(debugLabel: 'Next result');
+  final FocusNode _searchCloseFocusNode = FocusNode(debugLabel: 'Close search');
+  final FocusNode _searchLocatorFocusNode = FocusNode(
+    debugLabel: 'Active search result',
+  );
+  final ValueNotifier<int> _searchRevision = ValueNotifier(0);
+
+  DocumentSearchIndex? _searchIndex;
+  DocumentSearchResult? _searchResult;
+  Timer? _searchDebounce;
+  bool _searchOpen = false;
+  bool _searchPreparing = false;
+  bool _searchSheetOpen = false;
+  bool _searchSheetSelectionInProgress = false;
+  GlobalKey? _searchSheetRouteKey;
+  _SearchFocusRole? _searchSheetRestoreRole;
+  bool? _usesSearchPane;
+  int? _activeSearchMatchIndex;
 
   @override
   void initState() {
@@ -123,6 +166,14 @@ class _ReaderScreenState extends State<ReaderScreen>
   @override
   void didUpdateWidget(covariant ReaderScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final documentChanged =
+        oldWidget.document.id != widget.document.id ||
+        oldWidget.document.updatedAt != widget.document.updatedAt ||
+        oldWidget.document.source != widget.document.source;
+    if (documentChanged) {
+      if (_searchSheetOpen) unawaited(Navigator.of(context).maybePop());
+      _discardSearchSession();
+    }
     if (oldWidget.document.id != widget.document.id ||
         oldWidget.document.updatedAt != widget.document.updatedAt ||
         oldWidget.document.source != widget.document.source ||
@@ -148,6 +199,18 @@ class _ReaderScreenState extends State<ReaderScreen>
     unmountPrintSurface(_printSurfaceLease);
     _positionsListener.itemPositions.removeListener(_onPositionsChanged);
     _saveDebounce?.cancel();
+    _searchDebounce?.cancel();
+    _searchController.dispose();
+    _menuFocusNode.dispose();
+    _searchFieldFocusNode.dispose();
+    _searchResultFocusNode.dispose();
+    _searchResultListFocusNode.dispose();
+    _searchReopenFocusNode.dispose();
+    _searchPreviousFocusNode.dispose();
+    _searchNextFocusNode.dispose();
+    _searchCloseFocusNode.dispose();
+    _searchLocatorFocusNode.dispose();
+    _searchRevision.dispose();
     _flushPosition();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -310,11 +373,432 @@ class _ReaderScreenState extends State<ReaderScreen>
     );
   }
 
+  // --- Search ---------------------------------------------------------------
+
+  void _notifySearch(VoidCallback update) {
+    if (!mounted) return;
+    setState(update);
+    _searchRevision.value++;
+  }
+
+  Future<void> _openOrFocusSearch() async {
+    if (!_searchOpen) {
+      _notifySearch(() => _searchOpen = true);
+      unawaited(_ensureSearchIndex());
+    }
+
+    final pane =
+        _usesSearchPane ??
+        usesPersistentSearchPane(MediaQuery.sizeOf(context).width);
+    if (pane) {
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _searchFieldFocusNode.requestFocus(),
+      );
+    } else if (_searchSheetOpen) {
+      _searchFieldFocusNode.requestFocus();
+    } else {
+      unawaited(_showSearchSheet(opener: _menuFocusNode));
+    }
+  }
+
+  Future<void> _ensureSearchIndex() async {
+    if (_searchIndex != null || _searchPreparing) return;
+    _notifySearch(() => _searchPreparing = true);
+
+    // The preparing state must paint before synchronous parsing begins.
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted || !_searchOpen || _searchIndex != null) return;
+
+    final index = DocumentSearchIndex.build(widget.document.source);
+    final result = index.search(
+      _searchController.text,
+      renderedBlockCount: _blocks.length,
+    );
+    _notifySearch(() {
+      _searchIndex = index;
+      _searchResult = result;
+      _searchPreparing = false;
+    });
+    widget.onSearchIndexBuilt?.call();
+  }
+
+  void _queryChanged(String value) {
+    _searchDebounce?.cancel();
+    if (value.trim().isEmpty) {
+      _runSearch(value);
+      return;
+    }
+    _searchDebounce = Timer(
+      const Duration(milliseconds: 150),
+      () => _runSearch(value),
+    );
+  }
+
+  void _runSearch(String value) {
+    final index = _searchIndex;
+    if (index == null) {
+      unawaited(_ensureSearchIndex());
+      return;
+    }
+    final result = index.search(value, renderedBlockCount: _blocks.length);
+    _notifySearch(() {
+      _searchResult = result;
+      _activeSearchMatchIndex = null;
+    });
+  }
+
+  void _submitSearch(String value) {
+    _searchDebounce?.cancel();
+    if (_searchResult?.query != value.trim()) _runSearch(value);
+    if (HardwareKeyboard.instance.isShiftPressed) {
+      unawaited(_stepSearch(-1));
+    } else {
+      unawaited(_stepSearch(1));
+    }
+  }
+
+  Future<void> _stepSearch(int delta) async {
+    final result = _searchResult;
+    if (result == null ||
+        !result.isAvailable ||
+        result.isOverflow ||
+        result.matches.isEmpty) {
+      return;
+    }
+    final current = _activeSearchMatchIndex;
+    final next = current == null
+        ? (delta < 0 ? result.matches.length - 1 : 0)
+        : (current + delta) % result.matches.length;
+    await _activateSearchMatch(next);
+  }
+
+  Future<void> _activateSearchMatch(
+    int index, {
+    BuildContext? dismissSheetContext,
+  }) async {
+    final result = _searchResult;
+    if (result == null ||
+        !result.isAvailable ||
+        result.isOverflow ||
+        index < 0 ||
+        index >= result.matches.length) {
+      return;
+    }
+
+    if (dismissSheetContext != null && _searchSheetOpen) {
+      _searchSheetSelectionInProgress = true;
+      await Navigator.of(dismissSheetContext).maybePop();
+      if (!mounted) return;
+      await _waitForSearchSheetDisposal();
+      if (!mounted) return;
+    }
+
+    final match = result.matches[index];
+    _notifySearch(() => _activeSearchMatchIndex = index);
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted || !_scrollController.isAttached) return;
+    await _scrollController.scrollTo(
+      index: match.blockIndex,
+      alignment: 0.12,
+      duration: const Duration(milliseconds: 320),
+      curve: Curves.easeOutCubic,
+    );
+    if (!mounted) return;
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
+    _searchFieldFocusNode.unfocus();
+    FocusScope.of(context).requestFocus(_searchLocatorFocusNode);
+  }
+
+  Future<void> _showSearchSheet({
+    required FocusNode opener,
+    _SearchFocusRole? initialFocusRole,
+  }) async {
+    if (!mounted || _searchSheetOpen || !_searchOpen) return;
+    final routeKey = GlobalKey();
+    final restoresTransitionRole =
+        initialFocusRole == _SearchFocusRole.locator ||
+        initialFocusRole == _SearchFocusRole.previous ||
+        initialFocusRole == _SearchFocusRole.next;
+    _notifySearch(() {
+      _searchSheetOpen = true;
+      _searchSheetRouteKey = routeKey;
+      _searchSheetRestoreRole = restoresTransitionRole
+          ? initialFocusRole
+          : null;
+    });
+    final route = showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: ReaderPalette.of(context).background,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (sheetContext) => KeyedSubtree(
+        key: routeKey,
+        child: FractionallySizedBox(
+          heightFactor: 0.92,
+          widthFactor: MediaQuery.sizeOf(sheetContext).width < 600 ? 1 : null,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 640),
+            child: AnimatedBuilder(
+              animation: _searchRevision,
+              builder: (context, _) => _buildSearchSurface(
+                SearchSurfaceMode.sheet,
+                onClose: () => Navigator.pop(sheetContext),
+                onSelect: (index) => unawaited(
+                  _activateSearchMatch(
+                    index,
+                    dismissSheetContext: sheetContext,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    final focusRole = restoresTransitionRole
+        ? (_activeSearchMatchIndex == null
+              ? _SearchFocusRole.field
+              : _SearchFocusRole.result)
+        : initialFocusRole ??
+              (identical(opener, _searchReopenFocusNode) &&
+                      _activeSearchMatchIndex != null
+                  ? _SearchFocusRole.result
+                  : _SearchFocusRole.field);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _restoreMappedSearchFocus(focusRole),
+      );
+    });
+    await route;
+    if (!mounted) return;
+    await _waitForSearchSheetDisposal();
+    if (!mounted) return;
+    final selected = _searchSheetSelectionInProgress;
+    final restoreRole = _searchSheetRestoreRole;
+    _searchSheetSelectionInProgress = false;
+    _notifySearch(() {
+      _searchSheetOpen = false;
+      if (identical(_searchSheetRouteKey, routeKey)) {
+        _searchSheetRouteKey = null;
+      }
+      _searchSheetRestoreRole = null;
+    });
+    if (!selected && _searchOpen && !(_usesSearchPane ?? false)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (restoreRole != null) {
+          _restoreMappedSearchFocus(restoreRole);
+        } else if (opener.canRequestFocus) {
+          opener.requestFocus();
+        }
+      });
+    }
+  }
+
+  Future<void> _waitForSearchSheetDisposal() async {
+    final routeKey = _searchSheetRouteKey;
+    while (mounted && routeKey?.currentContext != null) {
+      await WidgetsBinding.instance.endOfFrame;
+    }
+  }
+
+  Widget _buildSearchSurface(
+    SearchSurfaceMode mode, {
+    required VoidCallback onClose,
+    required ValueChanged<int> onSelect,
+  }) {
+    final media = MediaQuery.of(context);
+    return MediaQuery(
+      data: media.copyWith(
+        textScaler: TextScaler.linear(widget.settings.fontScale),
+      ),
+      child: SearchSurface(
+        mode: mode,
+        palette: ReaderPalette.of(context),
+        controller: _searchController,
+        fieldFocusNode: _searchFieldFocusNode,
+        resultFocusNode: _searchResultFocusNode,
+        resultListFocusNode: _searchResultListFocusNode,
+        previousFocusNode: _searchPreviousFocusNode,
+        nextFocusNode: _searchNextFocusNode,
+        closeFocusNode: _searchCloseFocusNode,
+        isPreparing: _searchPreparing,
+        result: _searchResult,
+        activeMatchIndex: _activeSearchMatchIndex,
+        onQueryChanged: _queryChanged,
+        onSubmitted: _submitSearch,
+        onSelect: onSelect,
+        onPrevious: () => unawaited(_stepSearch(-1)),
+        onNext: () => unawaited(_stepSearch(1)),
+        onClose: onClose,
+      ),
+    );
+  }
+
+  void _closeSearchSession() {
+    _searchDebounce?.cancel();
+    if (_searchSheetOpen) Navigator.of(context).maybePop();
+    _notifySearch(() {
+      _searchOpen = false;
+      _searchPreparing = false;
+      _searchSheetOpen = false;
+      _searchSheetSelectionInProgress = false;
+      _searchSheetRestoreRole = null;
+      _searchController.clear();
+      _searchResult = null;
+      _activeSearchMatchIndex = null;
+    });
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _menuFocusNode.requestFocus(),
+    );
+  }
+
+  void _discardSearchSession() {
+    _searchDebounce?.cancel();
+    _searchOpen = false;
+    _searchPreparing = false;
+    _searchSheetOpen = false;
+    _searchSheetSelectionInProgress = false;
+    _searchSheetRestoreRole = null;
+    _searchController.clear();
+    _searchIndex = null;
+    _searchResult = null;
+    _activeSearchMatchIndex = null;
+    _searchRevision.value++;
+  }
+
+  void _observeSearchMode(bool usesPane) {
+    final previous = _usesSearchPane;
+    final focusRole = previous == null || previous == usesPane
+        ? null
+        : _currentSearchFocusRole();
+    _usesSearchPane = usesPane;
+    if (previous == null || previous == usesPane || !_searchOpen) return;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_searchOpen) return;
+      if (usesPane) {
+        unawaited(_moveSearchSheetToPane(focusRole ?? _SearchFocusRole.field));
+      } else if (!_searchSheetOpen) {
+        unawaited(
+          _showSearchSheet(
+            opener: _searchReopenFocusNode,
+            initialFocusRole: focusRole,
+          ),
+        );
+      }
+    });
+  }
+
+  Future<void> _moveSearchSheetToPane(_SearchFocusRole focusRole) async {
+    final restoreRole = _searchSheetRestoreRole ?? focusRole;
+    if (_searchSheetOpen) await Navigator.of(context).maybePop();
+    if (!mounted) return;
+    await _waitForSearchSheetDisposal();
+    if (!mounted) return;
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
+    _restoreMappedSearchFocus(restoreRole);
+  }
+
+  _SearchFocusRole _currentSearchFocusRole() {
+    if (_searchFieldFocusNode.hasFocus) return _SearchFocusRole.field;
+    if (_searchResultFocusNode.hasFocus ||
+        _searchResultListFocusNode.hasFocus) {
+      return _SearchFocusRole.result;
+    }
+    if (_searchPreviousFocusNode.hasFocus) return _SearchFocusRole.previous;
+    if (_searchNextFocusNode.hasFocus) return _SearchFocusRole.next;
+    if (_searchCloseFocusNode.hasFocus) return _SearchFocusRole.close;
+    if (_searchLocatorFocusNode.hasFocus) return _SearchFocusRole.locator;
+    if (_searchReopenFocusNode.hasFocus) return _SearchFocusRole.reopen;
+    return _activeSearchMatchIndex == null
+        ? _SearchFocusRole.field
+        : _SearchFocusRole.result;
+  }
+
+  void _restoreMappedSearchFocus(_SearchFocusRole role) {
+    var target = switch (role) {
+      _SearchFocusRole.field => _searchFieldFocusNode,
+      _SearchFocusRole.result =>
+        _searchResultFocusNode.context == null
+            ? _searchResultListFocusNode
+            : _searchResultFocusNode,
+      _SearchFocusRole.previous => _searchPreviousFocusNode,
+      _SearchFocusRole.next => _searchNextFocusNode,
+      _SearchFocusRole.close => _searchCloseFocusNode,
+      _SearchFocusRole.locator => _searchLocatorFocusNode,
+      _SearchFocusRole.reopen => _searchReopenFocusNode,
+    };
+    if (target.context == null || !target.canRequestFocus) {
+      target = _searchFieldFocusNode;
+    }
+    if (target.context != null && target.canRequestFocus) target.requestFocus();
+  }
+
+  Widget _searchBlock(int index, ReaderPalette palette) {
+    final result = _searchResult;
+    final active = _activeSearchMatchIndex;
+    if (!_searchOpen ||
+        result == null ||
+        !result.isAvailable ||
+        result.isOverflow ||
+        active == null ||
+        result.matches[active].blockIndex != index) {
+      return _blocks[index];
+    }
+
+    final match = result.matches[active];
+    final heading = match.heading;
+    final label = heading == null
+        ? 'Search result ${active + 1} of ${result.total}'
+        : 'Search result ${active + 1} of ${result.total}, $heading';
+    return Focus(
+      focusNode: _searchLocatorFocusNode,
+      child: Semantics(
+        key: const ValueKey('active-search-locator'),
+        selected: true,
+        focusable: true,
+        label: label,
+        child: Container(
+          decoration: BoxDecoration(
+            color: palette.link.withValues(alpha: 0.08),
+            border: Border(left: BorderSide(color: palette.link, width: 4)),
+          ),
+          padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.location_searching, size: 16, color: palette.link),
+                  const SizedBox(width: 6),
+                  Text(
+                    label,
+                    style: TextStyle(
+                      color: palette.link,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              _blocks[index],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _openMenu() async {
     final palette = ReaderPalette.of(context);
     final action = await showModalBottomSheet<_MenuAction>(
       context: context,
       backgroundColor: palette.background,
+      isScrollControlled: true,
       builder: (context) => _ReaderMenu(
         document: widget.document,
         palette: palette,
@@ -336,6 +820,8 @@ class _ReaderScreenState extends State<ReaderScreen>
       case _MenuAction.contents:
         final target = await showTocSheet(context, _toc);
         if (target != null) _jumpTo(target);
+      case _MenuAction.search:
+        await _openOrFocusSearch();
       case _MenuAction.appearance:
         await showSettingsSheet(
           context,
@@ -364,20 +850,86 @@ class _ReaderScreenState extends State<ReaderScreen>
   Widget build(BuildContext context) {
     final palette = ReaderPalette.of(context);
     final media = MediaQuery.of(context);
-
-    final horizontal = readerHorizontalPadding(media.size.width);
-
     final restore = _restore;
     final initialIndex = restore == null
         ? 0
         : restore.blockIndex.clamp(0, math.max(0, _blocks.length - 1)).toInt();
 
-    return Scaffold(
-      backgroundColor: palette.background,
-      body: MediaQuery(
-        // Flutter Web/CanvasKit does not honour the iOS system text-size
-        // setting, so the in-app control is the only way to change size.
+    final bindings = <ShortcutActivator, VoidCallback>{
+      const SingleActivator(LogicalKeyboardKey.keyF, control: true): () =>
+          unawaited(_openOrFocusSearch()),
+      const SingleActivator(LogicalKeyboardKey.keyF, meta: true): () =>
+          unawaited(_openOrFocusSearch()),
+      if (_searchOpen && (_usesSearchPane ?? false))
+        const SingleActivator(LogicalKeyboardKey.escape): _closeSearchSession,
+    };
+
+    return CallbackShortcuts(
+      bindings: bindings,
+      child: Scaffold(
+        backgroundColor: palette.background,
+        body: LayoutBuilder(
+          builder: (context, constraints) {
+            final usesPane = usesPersistentSearchPane(constraints.maxWidth);
+            _observeSearchMode(usesPane);
+            final readerWidth = _searchOpen && usesPane
+                ? constraints.maxWidth -
+                      kSearchPaneWidth -
+                      kSearchPaneDividerWidth
+                : constraints.maxWidth;
+            final reader = _buildReaderRegion(
+              palette: palette,
+              media: media,
+              readerWidth: readerWidth,
+              initialIndex: initialIndex,
+              initialAlignment: restore == null ? 0 : -restore.fraction,
+              usesPane: usesPane,
+            );
+
+            if (!_searchOpen || !usesPane) return reader;
+            return Row(
+              children: [
+                SizedBox(
+                  width: kSearchPaneWidth,
+                  child: _buildSearchSurface(
+                    SearchSurfaceMode.pane,
+                    onClose: _closeSearchSession,
+                    onSelect: (index) => unawaited(_activateSearchMatch(index)),
+                  ),
+                ),
+                VerticalDivider(
+                  width: kSearchPaneDividerWidth,
+                  color: palette.rule,
+                ),
+                Expanded(child: reader),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildReaderRegion({
+    required ReaderPalette palette,
+    required MediaQueryData media,
+    required double readerWidth,
+    required int initialIndex,
+    required double initialAlignment,
+    required bool usesPane,
+  }) {
+    final horizontal = readerHorizontalPadding(readerWidth);
+    return ExcludeFocus(
+      excluding: _searchSheetOpen,
+      child: MediaQuery(
+        key: const ValueKey('reader-region'),
+        // Search panes reduce the Reader region itself; Markdown and padding
+        // see that region rather than the full window. While a modal search
+        // route exists, the underlying Reader and compact navigator are not
+        // physically focusable. The user font scale remains applied exactly as
+        // before.
         data: media.copyWith(
+          size: Size(readerWidth, media.size.height),
           textScaler: TextScaler.linear(widget.settings.fontScale),
         ),
         child: Stack(
@@ -387,13 +939,11 @@ class _ReaderScreenState extends State<ReaderScreen>
               child: SelectionArea(
                 child: ScrollablePositionedList.builder(
                   itemCount: _blocks.length,
-                  itemBuilder: (context, index) => _blocks[index],
+                  itemBuilder: (context, index) => _searchBlock(index, palette),
                   itemScrollController: _scrollController,
                   itemPositionsListener: _positionsListener,
                   initialScrollIndex: initialIndex,
-                  // Same units as ItemPosition.itemLeadingEdge, so this restores
-                  // the exact offset within the block, not just the block.
-                  initialAlignment: restore == null ? 0 : -restore.fraction,
+                  initialAlignment: initialAlignment,
                   padding: EdgeInsets.fromLTRB(
                     horizontal,
                     media.padding.top + 16,
@@ -406,8 +956,28 @@ class _ReaderScreenState extends State<ReaderScreen>
             _MenuButton(
               visible: _controlsVisible,
               palette: palette,
+              focusNode: _menuFocusNode,
               onTap: _openMenu,
             ),
+            if (_searchOpen && !usesPane && !_searchSheetOpen)
+              Positioned(
+                right: 16,
+                bottom: media.padding.bottom + 82,
+                child: CompactSearchNavigator(
+                  palette: palette,
+                  result: _searchResult,
+                  activeMatchIndex: _activeSearchMatchIndex,
+                  reopenFocusNode: _searchReopenFocusNode,
+                  previousFocusNode: _searchPreviousFocusNode,
+                  nextFocusNode: _searchNextFocusNode,
+                  onShowResults: () => unawaited(
+                    _showSearchSheet(opener: _searchReopenFocusNode),
+                  ),
+                  onPrevious: () => unawaited(_stepSearch(-1)),
+                  onNext: () => unawaited(_stepSearch(1)),
+                  onClose: _closeSearchSession,
+                ),
+              ),
           ],
         ),
       ),
@@ -427,7 +997,15 @@ class _ReaderScreenState extends State<ReaderScreen>
   }
 }
 
-enum _MenuAction { contents, appearance, edit, loadFile, language, home }
+enum _MenuAction {
+  contents,
+  search,
+  appearance,
+  edit,
+  loadFile,
+  language,
+  home,
+}
 
 class _ReaderMenu extends StatelessWidget {
   const _ReaderMenu({
@@ -522,6 +1100,12 @@ class _ReaderMenu extends StatelessWidget {
                 onTap: () => Navigator.pop(context, _MenuAction.contents),
               ),
             _MenuTile(
+              icon: Icons.search_rounded,
+              label: 'Search document',
+              palette: palette,
+              onTap: () => Navigator.pop(context, _MenuAction.search),
+            ),
+            _MenuTile(
               icon: Icons.tune_rounded,
               label: 'Appearance',
               palette: palette,
@@ -596,6 +1180,8 @@ class _MenuTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListTile(
+      minTileHeight: 48,
+      visualDensity: VisualDensity.compact,
       leading: Icon(icon, color: palette.muted),
       title: Text(label, style: TextStyle(fontSize: 16, color: palette.text)),
       subtitle: subtitle == null
@@ -614,11 +1200,13 @@ class _MenuButton extends StatelessWidget {
     required this.visible,
     required this.palette,
     required this.onTap,
+    required this.focusNode,
   });
 
   final bool visible;
   final ReaderPalette palette;
   final VoidCallback onTap;
+  final FocusNode focusNode;
 
   @override
   Widget build(BuildContext context) {
@@ -636,6 +1224,8 @@ class _MenuButton extends StatelessWidget {
             elevation: 2,
             shadowColor: Colors.black.withValues(alpha: 0.25),
             child: InkWell(
+              focusNode: focusNode,
+              autofocus: true,
               customBorder: const CircleBorder(),
               onTap: onTap,
               child: Padding(
