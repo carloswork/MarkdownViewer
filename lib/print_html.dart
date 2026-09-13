@@ -1,9 +1,7 @@
 import 'dart:convert';
 
-// `markdown` is intentionally supplied by markdown_widget. DF-026 C1 is not
-// authorized to add a dependency, and the accepted plan pins this transitive
-// package at 7.3.1.
-// ignore: depend_on_referenced_packages
+// DF-041 promotes the already-pinned parser to a direct dependency because the
+// Reader search index and this print projection both rely on its exact AST.
 import 'package:markdown/markdown.dart' as md;
 
 const _allowedLinkSchemes = {'http', 'https', 'mailto'};

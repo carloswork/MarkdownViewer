@@ -15,6 +15,10 @@ dependencies:
   # Markdown -> widget list, TOC extraction, syntax highlighting. Local only.
   markdown_widget: 2.3.2+8
 
+  # Exact renderer-aligned parser contract for the in-memory document search
+  # index. Kept in lockstep with markdown_widget 2.3.2+8.
+  markdown: 7.3.1
+
   # Index-addressable scrolling: TOC jump, reading-position tracking and restore.
   scrollable_positioned_list: 0.3.8
 
