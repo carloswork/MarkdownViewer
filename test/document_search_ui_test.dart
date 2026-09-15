@@ -910,6 +910,390 @@ Another needle result.
     );
   });
 
+  testWidgets('pane Previous and Next keep the active result row visible', (
+    tester,
+  ) async {
+    const total = 60;
+    useViewport(tester, const Size(1200, 500));
+    final body = List.generate(
+      total,
+      (index) => 'Paragraph $index carries needle text.',
+    ).join('\n\n');
+    await tester.pumpWidget(reader(MarkdownDocument.fromSource(body)));
+    await settle(tester);
+    await openFromMenu(tester);
+    await tester.enterText(
+      find.byKey(const ValueKey('search-field')),
+      'needle',
+    );
+    await tester.pump(const Duration(milliseconds: 151));
+    await tester.pump();
+
+    final list = find.byKey(const ValueKey('search-result-list'));
+    Finder row(int index) => find.byKey(ValueKey('search-result-$index'));
+    bool isBuilt(int index) => row(index).evaluate().isNotEmpty;
+    bool isVisible(int index) {
+      if (!isBuilt(index)) return false;
+      final viewport = tester.getRect(list);
+      final rect = tester.getRect(row(index));
+      return rect.top >= viewport.top - 0.5 &&
+          rect.bottom <= viewport.bottom + 0.5;
+    }
+
+    int lastVisibleRow() {
+      var last = -1;
+      for (var index = 0; index < total; index++) {
+        if (isVisible(index)) last = index;
+      }
+      return last;
+    }
+
+    void expectActive(int index) {
+      expect(
+        tester.getSemantics(list).label,
+        contains('Result ${index + 1} of $total selected'),
+      );
+      expect(tester.widget<ListTile>(row(index)).selected, isTrue);
+      expect(isVisible(index), isTrue, reason: 'active row ${index + 1}');
+      expect(
+        tester
+            .getSemantics(find.byKey(const ValueKey('active-search-locator')))
+            .label
+            .split('\n')
+            .first,
+        'Search result ${index + 1} of $total',
+      );
+    }
+
+    Future<void> step(String key) async {
+      await tester.tap(find.byKey(ValueKey(key)));
+      await settle(tester);
+    }
+
+    Future<void> scrollListTo(double offset) async {
+      tester
+          .state<ScrollableState>(
+            find.descendant(of: list, matching: find.byType(Scrollable)),
+          )
+          .position
+          .jumpTo(offset);
+      await tester.pump();
+    }
+
+    await tester.tap(row(0));
+    await settle(tester);
+    expectActive(0);
+
+    // Next across the bottom edge of the list viewport.
+    final bottom = lastVisibleRow();
+    expect(bottom, greaterThan(0));
+    for (var index = 0; index < bottom; index++) {
+      await step('search-next');
+    }
+    expectActive(bottom);
+    expect(isVisible(bottom + 1), isFalse);
+    await step('search-next');
+    expectActive(bottom + 1);
+    expect(isVisible(bottom), isTrue, reason: 'scrolls only as necessary');
+
+    // Previous across the top edge of the list viewport.
+    final scrollable = find.descendant(
+      of: list,
+      matching: find.byType(Scrollable),
+    );
+    final position = tester.state<ScrollableState>(scrollable).position;
+    await scrollListTo(
+      position.pixels +
+          tester.getRect(row(bottom + 1)).top -
+          tester.getRect(list).top,
+    );
+    expect(isVisible(bottom + 1), isTrue);
+    expect(isVisible(bottom), isFalse);
+    await step('search-previous');
+    expectActive(bottom);
+    expect(isVisible(bottom + 1), isTrue, reason: 'scrolls only as necessary');
+
+    // Next and Previous to rows that begin unmaterialized far from the list
+    // viewport.
+    final activeBeforeDistantNext = bottom;
+    await scrollListTo(
+      tester.state<ScrollableState>(scrollable).position.maxScrollExtent,
+    );
+    expect(isBuilt(activeBeforeDistantNext + 1), isFalse);
+    await step('search-next');
+    expectActive(activeBeforeDistantNext + 1);
+
+    final activeBeforeDistantPrevious = activeBeforeDistantNext + 1;
+    await scrollListTo(
+      tester.state<ScrollableState>(scrollable).position.maxScrollExtent,
+    );
+    expect(isBuilt(activeBeforeDistantPrevious - 1), isFalse);
+    await step('search-previous');
+    expectActive(activeBeforeDistantPrevious - 1);
+
+    // Wraparound destinations also begin unmaterialized at the far end.
+    for (var index = activeBeforeDistantPrevious - 1; index > 0; index--) {
+      await step('search-previous');
+    }
+    expectActive(0);
+    await scrollListTo(0);
+    expect(isBuilt(total - 1), isFalse);
+    await step('search-previous');
+    expectActive(total - 1);
+    expect(isBuilt(0), isFalse);
+    await step('search-next');
+    expectActive(0);
+  });
+
+  Future<_ResultListProbe> openResultList(
+    WidgetTester tester,
+    List<String> paragraphs,
+  ) async {
+    useViewport(tester, const Size(1200, 500));
+    await tester.pumpWidget(
+      reader(MarkdownDocument.fromSource(paragraphs.join('\n\n'))),
+    );
+    await settle(tester);
+    await openFromMenu(tester);
+    await tester.enterText(
+      find.byKey(const ValueKey('search-field')),
+      'needle',
+    );
+    await tester.pump(const Duration(milliseconds: 151));
+    await tester.pump();
+    return _ResultListProbe(tester, paragraphs.length, settle);
+  }
+
+  Future<(_ResultListProbe, double)> openUniformResultList(
+    WidgetTester tester,
+  ) async {
+    final probe = await openResultList(
+      tester,
+      List.generate(60, (index) => 'Paragraph $index carries needle text.'),
+    );
+    return (probe, tester.getRect(probe.row(0)).height);
+  }
+
+  testWidgets('results list Next reveals a row above the viewport', (
+    tester,
+  ) async {
+    final (probe, rowHeight) = await openUniformResultList(tester);
+
+    // An already-visible destination leaves the list offset unchanged.
+    await probe.scrollTo(10 * rowHeight);
+    await tester.tap(probe.row(10));
+    await settle(tester);
+    probe.expectActive(10);
+    final stableOffset = probe.offset;
+    await probe.step('search-next');
+    probe.expectActive(11);
+    expect(probe.offset, stableOffset, reason: 'visible row needs no scroll');
+
+    // Next to a built row clipped by the top edge after the list was scrolled
+    // past the active row.
+    await probe.scrollTo(12 * rowHeight + rowHeight / 2);
+    expect(probe.isBuilt(12), isTrue);
+    expect(probe.isVisible(12), isFalse);
+    expect(probe.rect(12).top, lessThan(probe.viewport.top));
+    await probe.step('search-next');
+    probe.expectActive(12);
+    expect(probe.rect(12).top, moreOrLessEquals(probe.viewport.top));
+
+    // Next to a row wholly above the viewport but laid out in the cache band.
+    await probe.scrollTo(14 * rowHeight + 4);
+    expect(probe.isOnstage(13), isFalse);
+    expect(probe.isBuilt(13), isTrue);
+    await probe.step('search-next');
+    probe.expectActive(13);
+    expect(probe.rect(13).top, moreOrLessEquals(probe.viewport.top));
+  });
+
+  testWidgets('results list Previous reveals a row below the viewport', (
+    tester,
+  ) async {
+    final (probe, rowHeight) = await openUniformResultList(tester);
+
+    // An already-visible destination leaves the list offset unchanged.
+    await probe.scrollTo(30 * rowHeight);
+    await tester.tap(probe.row(31));
+    await settle(tester);
+    probe.expectActive(31);
+    final stableOffset = probe.offset;
+    await probe.step('search-previous');
+    probe.expectActive(30);
+    expect(probe.offset, stableOffset, reason: 'visible row needs no scroll');
+
+    // Previous to a built row clipped by the bottom edge after the list was
+    // scrolled back before the active row.
+    await probe.scrollTo(30 * rowHeight);
+    await tester.tap(probe.row(30));
+    await settle(tester);
+    probe.expectActive(30);
+    final listHeight = probe.viewport.height;
+    await probe.scrollTo(29 * rowHeight + rowHeight / 2 - listHeight);
+    expect(probe.isBuilt(29), isTrue);
+    expect(probe.isVisible(29), isFalse);
+    expect(probe.rect(29).bottom, greaterThan(probe.viewport.bottom));
+    await probe.step('search-previous');
+    probe.expectActive(29);
+    expect(probe.rect(29).bottom, moreOrLessEquals(probe.viewport.bottom));
+
+    // Previous to a row wholly below the viewport but laid out in the cache
+    // band.
+    await probe.scrollTo(28 * rowHeight - listHeight - 4);
+    expect(probe.isOnstage(28), isFalse);
+    expect(probe.isBuilt(28), isTrue);
+    await probe.step('search-previous');
+    probe.expectActive(28);
+    expect(probe.rect(28).bottom, moreOrLessEquals(probe.viewport.bottom));
+  });
+
+  // Block-skewed row heights: 100 one-line results followed by 100 three-line
+  // results, so the list's global average extent misplaces unbuilt rows.
+  Future<void> expectUnbuiltRowRevealed(
+    WidgetTester tester, {
+    required int active,
+    required String key,
+    required bool listAtEnd,
+  }) async {
+    final filler = List.filled(24, 'filler words widen this row').join(' ');
+    final probe = await openResultList(tester, [
+      for (var index = 0; index < 200; index++)
+        index < 100
+            ? 'Paragraph $index carries needle text.'
+            : 'Paragraph $index $filler needle $filler.',
+    ]);
+    await tester.scrollUntilVisible(
+      probe.row(active),
+      200,
+      scrollable: find.descendant(
+        of: probe.list,
+        matching: find.byType(Scrollable),
+      ),
+    );
+    await tester.ensureVisible(probe.row(active));
+    await tester.pump();
+    await tester.tap(probe.row(active));
+    await settle(tester);
+    probe.expectActive(active);
+
+    final target = key == 'search-next' ? active + 1 : active - 1;
+    await probe.scrollTo(listAtEnd ? probe.maxOffset : 0);
+    expect(probe.isBuilt(target), isFalse, reason: 'row starts unbuilt');
+    await probe.step(key);
+    probe.expectActive(target);
+    if (listAtEnd) {
+      expect(probe.rect(target).top, moreOrLessEquals(probe.viewport.top));
+    } else {
+      expect(
+        probe.rect(target).bottom,
+        moreOrLessEquals(probe.viewport.bottom),
+      );
+    }
+  }
+
+  testWidgets('results list Next reveals an unbuilt row above skewed rows', (
+    tester,
+  ) async {
+    await expectUnbuiltRowRevealed(
+      tester,
+      active: 99,
+      key: 'search-next',
+      listAtEnd: true,
+    );
+  });
+
+  testWidgets(
+    'results list Previous reveals an unbuilt row above skewed rows',
+    (tester) async {
+      await expectUnbuiltRowRevealed(
+        tester,
+        active: 117,
+        key: 'search-previous',
+        listAtEnd: true,
+      );
+    },
+  );
+
+  testWidgets('results list Next reveals an unbuilt row below skewed rows', (
+    tester,
+  ) async {
+    await expectUnbuiltRowRevealed(
+      tester,
+      active: 117,
+      key: 'search-next',
+      listAtEnd: false,
+    );
+  });
+
+  testWidgets(
+    'results list Previous reveals an unbuilt row below skewed rows',
+    (tester) async {
+      await expectUnbuiltRowRevealed(
+        tester,
+        active: 140,
+        key: 'search-previous',
+        listAtEnd: false,
+      );
+    },
+  );
+
+  testWidgets('results list reveals varied-height rows from any list offset', (
+    tester,
+  ) async {
+    const total = 45;
+    final filler = List.filled(24, 'filler words widen this row').join(' ');
+    final probe = await openResultList(
+      tester,
+      List.generate(
+        total,
+        (index) => index % 3 == 0
+            ? 'Paragraph $index $filler needle $filler.'
+            : 'Paragraph $index carries needle text.',
+      ),
+    );
+    final heights = {
+      for (var index = 0; index < total; index++)
+        if (probe.isBuilt(index)) probe.rect(index).height,
+    };
+    expect(heights.length, greaterThan(1), reason: 'row heights must vary');
+
+    await tester.tap(probe.row(0));
+    await settle(tester);
+    probe.expectActive(0);
+
+    // Before each step, move the list to the far end, the start, or just past
+    // the opposite edge of the active row, then step through both wraps.
+    Future<void> sweep(String key, int delta) async {
+      var active = probe.activeIndex;
+      for (var step = 0; step < total + 3; step++) {
+        final max = probe.maxOffset;
+        switch (step % 4) {
+          case 0:
+            await probe.scrollTo(max);
+          case 1:
+            await probe.scrollTo(0);
+          case 2:
+            final rect = probe.rect(active);
+            await probe.scrollTo(
+              probe.offset + rect.bottom - probe.viewport.top + 4,
+            );
+          case 3:
+            final rect = probe.rect(active);
+            await probe.scrollTo(
+              probe.offset - (probe.viewport.bottom - rect.top) - 4,
+            );
+        }
+        await probe.step(key);
+        active = (active + delta + total) % total;
+        probe.expectActive(active);
+      }
+    }
+
+    await sweep('search-next', 1);
+    await sweep('search-previous', -1);
+  });
+
   testWidgets('zero and overflow states disable navigation truthfully', (
     tester,
   ) async {
@@ -1112,6 +1496,33 @@ fenced marker
       await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
       await settle(tester);
       expect(find.byKey(const ValueKey('search-pane')), findsOneWidget);
+
+      useViewport(tester, const Size(390, 800));
+      await settle(tester);
+      expect(find.byKey(const ValueKey('search-sheet')), findsOneWidget);
+      expect(
+        tester.getSize(find.byKey(const ValueKey('search-close'))),
+        const Size(48, 48),
+      );
+      await tester.tap(find.byKey(const ValueKey('search-close')));
+      await settle(tester);
+      for (final key in <String>[
+        'search-reopen-results',
+        'compact-search-previous',
+        'compact-search-next',
+        'compact-search-close',
+      ]) {
+        final size = tester.getSize(find.byKey(ValueKey(key)));
+        expect(size.width, greaterThanOrEqualTo(48));
+        expect(size.height, greaterThanOrEqualTo(48));
+      }
+      expect(
+        find.bySemanticsLabel(RegExp(r'^Show search results\.')),
+        findsOneWidget,
+      );
+      expect(find.bySemanticsLabel('Previous result'), findsOneWidget);
+      expect(find.bySemanticsLabel('Next result'), findsOneWidget);
+      expect(find.bySemanticsLabel('Close search'), findsOneWidget);
     },
   );
 
@@ -1319,4 +1730,79 @@ fenced marker
     expect(find.byKey(const ValueKey('search-previous')), findsNothing);
     expect(find.byKey(const ValueKey('search-next')), findsNothing);
   });
+}
+
+/// Observes and drives the pane results list for active-row reveal tests.
+class _ResultListProbe {
+  _ResultListProbe(this.tester, this.total, this.settle);
+
+  final WidgetTester tester;
+  final int total;
+  final Future<void> Function(WidgetTester) settle;
+
+  Finder get list => find.byKey(const ValueKey('search-result-list'));
+
+  Finder row(int index) => find.byKey(ValueKey('search-result-$index'));
+
+  /// Includes rows laid out in the sliver's offstage cache band.
+  Finder builtRow(int index) =>
+      find.byKey(ValueKey('search-result-$index'), skipOffstage: false);
+
+  ScrollPosition get _position => tester
+      .state<ScrollableState>(
+        find.descendant(of: list, matching: find.byType(Scrollable)),
+      )
+      .position;
+
+  double get offset => _position.pixels;
+
+  double get maxOffset => _position.maxScrollExtent;
+
+  Rect get viewport => tester.getRect(list);
+
+  Rect rect(int index) => tester.getRect(builtRow(index));
+
+  /// Whether the row paints inside the list's paint region.
+  bool isOnstage(int index) => row(index).evaluate().isNotEmpty;
+
+  /// Whether the row is laid out, including the offstage cache band.
+  bool isBuilt(int index) => builtRow(index).evaluate().isNotEmpty;
+
+  bool isVisible(int index) {
+    if (!isOnstage(index)) return false;
+    final bounds = rect(index);
+    return bounds.top >= viewport.top - 0.5 &&
+        bounds.bottom <= viewport.bottom + 0.5;
+  }
+
+  int get activeIndex {
+    final match = RegExp(
+      r'Result (\d+) of \d+ selected',
+    ).firstMatch(tester.getSemantics(list).label);
+    return int.parse(match!.group(1)!) - 1;
+  }
+
+  void expectActive(int index) {
+    expect(activeIndex, index);
+    expect(isVisible(index), isTrue, reason: 'active row ${index + 1}');
+    expect(tester.widget<ListTile>(row(index)).selected, isTrue);
+    expect(
+      tester
+          .getSemantics(find.byKey(const ValueKey('active-search-locator')))
+          .label
+          .split('\n')
+          .first,
+      'Search result ${index + 1} of $total',
+    );
+  }
+
+  Future<void> scrollTo(double value) async {
+    _position.jumpTo(value.clamp(0, maxOffset));
+    await tester.pump();
+  }
+
+  Future<void> step(String key) async {
+    await tester.tap(find.byKey(ValueKey(key)));
+    await settle(tester);
+  }
 }

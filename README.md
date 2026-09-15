@@ -14,6 +14,10 @@ keep the document. It is a reader, not an editor and not a Markdown IDE.
 - **Paste Markdown text** directly, for content that is not in a file.
 - **Table-of-contents navigation.** Headings are extracted into a Contents
   sheet; tapping an entry jumps to that part of the document.
+- **Full-document search.** Search the rendered document from a persistent pane
+  on wider screens or a focused sheet on narrower screens. Results include
+  context and exact-match emphasis, and Previous / Next navigation locates the
+  matching block without changing the document.
 - **Continue where you stopped.** Returning to the main screen keeps your place
   in the current document for the rest of the visit. Turn on *Keep for next time*
   in Settings to also store the document and your reading place in this
@@ -36,7 +40,8 @@ mobile apps are not part of this project; it runs in the browser.
 ## Privacy and local-first behaviour
 
 Markdown files are read locally in the browser. The application does not upload
-document content to a server.
+document content to a server. Search indexing and queries also stay in the
+current Reader session and are not stored or sent anywhere.
 
 Supporting details, all verifiable in the source:
 

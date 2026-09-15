@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Added full-document in-app search with ordered results, Previous/Next navigation, responsive pane and sheet layouts, keyboard focus handling, and local-only search over the open document.
+
 ## v1.2.0 — 2026-09-12
 
 - Added a Settings screen, reached from the main screen, holding the appearance options and the new controls for documents kept in this browser.
