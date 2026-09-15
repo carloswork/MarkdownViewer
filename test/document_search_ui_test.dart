@@ -1,6 +1,7 @@
 import 'dart:ui' show Tristate;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:markdown_viewer/document_search.dart';
@@ -1292,6 +1293,167 @@ Another needle result.
 
     await sweep('search-next', 1);
     await sweep('search-previous', -1);
+  });
+
+  SemanticsData semanticsOf(WidgetTester tester, String key) =>
+      tester.getSemantics(find.byKey(ValueKey(key))).getSemanticsData();
+
+  Future<void> performSemanticsTap(WidgetTester tester, String key) async {
+    final node = tester.getSemantics(find.byKey(ValueKey(key)));
+    expect(
+      node.getSemanticsData().hasAction(SemanticsAction.tap),
+      isTrue,
+      reason: '$key exposes a semantics tap action',
+    );
+    node.owner!.performAction(node.id, SemanticsAction.tap);
+    await settle(tester);
+  }
+
+  String locatorLine(WidgetTester tester) => tester
+      .getSemantics(find.byKey(const ValueKey('active-search-locator')))
+      .label
+      .split('\n')
+      .first;
+
+  testWidgets('compact navigator controls operate through semantics actions', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    useViewport(tester, const Size(800, 700));
+    await tester.pumpWidget(
+      reader(
+        MarkdownDocument.fromSource(
+          'Needle one.\n\nNeedle two.\n\nNeedle three.',
+        ),
+      ),
+    );
+    await settle(tester);
+    await openFromMenu(tester);
+    await tester.enterText(
+      find.byKey(const ValueKey('search-field')),
+      'needle',
+    );
+    await tester.pump(const Duration(milliseconds: 151));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('search-result-0')));
+    await settle(tester);
+    expect(
+      find.byKey(const ValueKey('compact-search-navigator')),
+      findsOneWidget,
+    );
+    expect(locatorLine(tester), 'Search result 1 of 3');
+
+    for (final key in const [
+      'compact-search-previous',
+      'compact-search-next',
+    ]) {
+      expect(
+        semanticsOf(tester, key).flagsCollection.isEnabled,
+        Tristate.isTrue,
+        reason: '$key is enabled',
+      );
+    }
+
+    await performSemanticsTap(tester, 'compact-search-next');
+    expect(locatorLine(tester), 'Search result 2 of 3');
+    await performSemanticsTap(tester, 'compact-search-previous');
+    expect(locatorLine(tester), 'Search result 1 of 3');
+    await performSemanticsTap(tester, 'compact-search-previous');
+    expect(locatorLine(tester), 'Search result 3 of 3');
+
+    await performSemanticsTap(tester, 'search-reopen-results');
+    expect(find.byKey(const ValueKey('search-sheet')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('search-close')));
+    await settle(tester);
+    expect(find.byKey(const ValueKey('search-sheet')), findsNothing);
+
+    await performSemanticsTap(tester, 'compact-search-close');
+    expect(
+      find.byKey(const ValueKey('compact-search-navigator')),
+      findsNothing,
+    );
+    expect(find.byKey(const ValueKey('active-search-locator')), findsNothing);
+    semantics.dispose();
+  });
+
+  testWidgets('disabled compact navigation is honest in semantics', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    final nodes = List.generate(3, (_) => FocusNode());
+    addTearDown(() {
+      for (final node in nodes) {
+        node.dispose();
+      }
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: CompactSearchNavigator(
+              palette: ReaderPalette.light,
+              result: null,
+              activeMatchIndex: null,
+              reopenFocusNode: nodes[0],
+              previousFocusNode: nodes[1],
+              nextFocusNode: nodes[2],
+              onShowResults: () {},
+              onPrevious: () {},
+              onNext: () {},
+              onClose: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+    for (final key in const [
+      'compact-search-previous',
+      'compact-search-next',
+    ]) {
+      final data = semanticsOf(tester, key);
+      expect(data.flagsCollection.isEnabled, Tristate.isFalse, reason: key);
+      expect(data.hasAction(SemanticsAction.tap), isFalse, reason: key);
+    }
+    for (final key in const ['search-reopen-results', 'compact-search-close']) {
+      expect(
+        semanticsOf(tester, key).hasAction(SemanticsAction.tap),
+        isTrue,
+        reason: key,
+      );
+    }
+    semantics.dispose();
+  });
+
+  testWidgets('pane controls and result rows expose semantics tap actions', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    useViewport(tester, const Size(1200, 700));
+    await tester.pumpWidget(
+      reader(MarkdownDocument.fromSource('Needle one.\n\nNeedle two.')),
+    );
+    await settle(tester);
+    await openFromMenu(tester);
+    await tester.enterText(
+      find.byKey(const ValueKey('search-field')),
+      'needle',
+    );
+    await tester.pump(const Duration(milliseconds: 151));
+    await tester.pump();
+    for (final key in const [
+      'search-previous',
+      'search-next',
+      'search-close',
+      'search-result-0',
+      'search-result-1',
+    ]) {
+      expect(
+        semanticsOf(tester, key).hasAction(SemanticsAction.tap),
+        isTrue,
+        reason: key,
+      );
+    }
+    semantics.dispose();
   });
 
   testWidgets('zero and overflow states disable navigation truthfully', (

@@ -3,6 +3,7 @@
 
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { cpus, release, totalmem } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { inflateSync } from 'node:zlib';
 
@@ -78,6 +79,44 @@ const semanticsProbe = `
 function haystack(node) {
   return [node.label, node.description, node.describedby, node.all]
     .filter(Boolean).join('\n');
+}
+
+// Plan section 9 item 3 probe, installed in the page without product
+// instrumentation. It timestamps the trusted pointerup that activates a control
+// and records when the semantics DOM first shows the new active result. That
+// committed frame includes rendering, so the latency is an upper bound on when
+// the state update begins.
+const latencyProbe = `
+  if (!window.__df041Latency) {
+    const state = { pattern: null, t0: null, done: null };
+    window.__df041Latency = state;
+    window.addEventListener('pointerup', event => {
+      if (state.pattern && state.t0 === null) state.t0 = event.timeStamp;
+    }, true);
+    new MutationObserver(() => {
+      if (!state.pattern || state.t0 === null || state.done !== null) return;
+      const seen = performance.now();
+      const pattern = new RegExp(state.pattern);
+      for (const node of document.querySelectorAll('flt-semantics')) {
+        // Flutter web exposes some labels as aria-label and others as the
+        // node's own text.
+        const ownText = node.childNodes.length && node.firstChild.nodeType === 3
+          ? node.textContent : '';
+        if (pattern.test(node.getAttribute('aria-label') ?? '') || pattern.test(ownText)) {
+          state.done = seen - state.t0;
+          return;
+        }
+      }
+    }).observe(document.documentElement, {
+      subtree: true, childList: true, attributes: true, characterData: true,
+    });
+  }
+  return 1;
+`;
+
+function percentile(values, fraction) {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.max(0, Math.ceil(fraction * sorted.length) - 1)];
 }
 
 // Persistent pane (360) plus divider (1); Reader semantics start at or after it.
@@ -397,6 +436,36 @@ class App {
     await delay(500);
   }
 
+  // Resolves an exact 48-pixel control anywhere on the page, never a tooltip.
+  async exactControl(label) {
+    return waitForValue(async () => this.mostSpecific((await this.nodes()).filter(node =>
+      this.firstLine(node) === label &&
+      node.w >= 44 && node.w <= 64 && node.h >= 44 && node.h <= 64)),
+    `${label} control`, 8000);
+  }
+
+  async compactIndex() {
+    for (const node of await this.nodes()) {
+      const match = this.firstLine(node).match(/^Show search results\. (\d+) of \d+/);
+      if (match) return Number(match[1]);
+    }
+    return null;
+  }
+
+  async measureStep(control, pattern) {
+    await this.session.evaluate(`
+      const state = window.__df041Latency;
+      state.pattern = ${JSON.stringify(pattern)}; state.t0 = null; state.done = null;
+      return 1;
+    `);
+    await this.clickNode(control);
+    const sample = await waitForValue(() => this.session.evaluate(
+      'const s = window.__df041Latency; return s.done === null ? null : { latencyMs: s.done };',
+    ), `step latency for ${pattern}`, 5000).catch(() => null);
+    await this.session.evaluate('window.__df041Latency.pattern = null; return 1;');
+    return sample;
+  }
+
   // Physical-keyboard event shape: a synthetic F carrying only a modifier flag
   // is not recognized as Ctrl+F by Flutter's keyboard converter.
   async controlShortcut(letter) {
@@ -614,6 +683,25 @@ try {
   record('pane results list keeps each newly active row visible during Previous/Next',
     paneSteps.length > 12 && paneSteps.every(entry => entry.rowVisible),
     { steps: paneSteps.length, hidden: paneSteps.filter(entry => !entry.rowVisible) });
+
+  // Plan section 9 item 3: cached Previous/Next state-update latency. Alternate
+  // Next and Previous so the active result returns to where it started; the
+  // first three pairs warm up and are not samples.
+  await session.evaluate(latencyProbe);
+  const latency = { warmup: [], pane: { next: [], previous: [] }, compact: { next: [], previous: [] } };
+  const latencyPairs = async (kind, currentIndex, resolveControl, patternFor) => {
+    for (let rep = -3; rep < 20; rep++) {
+      for (const [label, direction, bucket] of [['Next result', 1, 'next'], ['Previous result', -1, 'previous']]) {
+        const before = await currentIndex();
+        const expected = before + direction;
+        const sample = await app.measureStep(await resolveControl(label), patternFor(expected));
+        const entry = { kind, bucket, before, expected, latencyMs: sample?.latencyMs ?? null };
+        (rep < 0 ? latency.warmup : latency[kind][bucket]).push(entry);
+      }
+    }
+  };
+  await latencyPairs('pane', () => app.selectedResult(), label => app.paneControl(label),
+    index => `^Search results\\. Result ${index} of \\d+ selected$`);
   const wideScreenshot = await app.screenshot('wide-light');
 
   const boundary = [];
@@ -666,6 +754,42 @@ try {
     Boolean(compactReopen) &&
       compactNodes.some(n => haystack(n).includes('Previous result')) &&
       compactNodes.some(n => haystack(n).includes('Next result')));
+
+  if (compactReopen) {
+    await latencyPairs('compact', () => app.compactIndex(), label => app.exactControl(label),
+      index => `^Show search results\\. ${index} of \\d+`);
+  }
+  const latencySummary = {};
+  for (const kind of ['pane', 'compact']) {
+    for (const bucket of ['next', 'previous']) {
+      const samples = latency[kind][bucket];
+      const values = samples.map(entry => entry.latencyMs).filter(value => typeof value === 'number');
+      latencySummary[`${kind}-${bucket}`] = {
+        samples: samples.length,
+        measured: values.length,
+        p50: values.length ? percentile(values, 0.5) : null,
+        p95: values.length ? percentile(values, 0.95) : null,
+        max: values.length ? Math.max(...values) : null,
+      };
+    }
+  }
+  evidence.stepLatency = {
+    budgetMs: 50,
+    method: 'trusted pointerup timeStamp to first MutationObserver callback in which the semantics DOM exposes the new active result (pane list label or compact reopen label); an upper bound on state-update start that includes the committed frame',
+    environment: {
+      platform: process.platform,
+      osRelease: release(),
+      cpu: cpus()[0]?.model ?? null,
+      logicalCores: cpus().length,
+      totalMemoryBytes: totalmem(),
+    },
+    summary: latencySummary,
+    samples: latency,
+  };
+  record('cached Previous/Next state updates begin within 50 ms (p95, 20 warm samples each)',
+    Object.values(latencySummary).every(entry =>
+      entry.samples === 20 && entry.measured === 20 && entry.p95 <= 50),
+    { summary: latencySummary });
   if (compactReopen) await app.clickNode(compactReopen);
   const reopened = await app.searchField(6000).catch(() => null);
   record('compact navigator reopens narrow search', Boolean(reopened));

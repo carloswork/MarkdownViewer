@@ -728,6 +728,9 @@ class CompactSearchNavigator extends StatelessWidget {
           Semantics(
             label: 'Show search results. $label',
             button: true,
+            // Excluding the child's semantics also drops its tap action, so the
+            // wrapper carries the same activation as the visible control.
+            onTap: onShowResults,
             excludeSemantics: true,
             child: Tooltip(
               message: 'Show search results',
@@ -745,6 +748,7 @@ class CompactSearchNavigator extends StatelessWidget {
             label: 'Previous result',
             button: true,
             enabled: canNavigate,
+            onTap: canNavigate ? onPrevious : null,
             excludeSemantics: true,
             child: Tooltip(
               message: 'Previous result',
@@ -761,6 +765,7 @@ class CompactSearchNavigator extends StatelessWidget {
             label: 'Next result',
             button: true,
             enabled: canNavigate,
+            onTap: canNavigate ? onNext : null,
             excludeSemantics: true,
             child: Tooltip(
               message: 'Next result',
@@ -776,6 +781,7 @@ class CompactSearchNavigator extends StatelessWidget {
           Semantics(
             label: 'Close search',
             button: true,
+            onTap: onClose,
             excludeSemantics: true,
             child: Tooltip(
               message: 'Close search',
