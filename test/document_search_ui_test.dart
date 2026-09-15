@@ -1,10 +1,11 @@
 import 'dart:ui' show Tristate;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/semantics.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:markdown_viewer/document_search.dart';
+import 'package:markdown_viewer/han_script.dart';
 import 'package:markdown_viewer/markdown_theme.dart';
 import 'package:markdown_viewer/models.dart';
 import 'package:markdown_viewer/reader_screen.dart';
@@ -1892,6 +1893,269 @@ fenced marker
     expect(find.byKey(const ValueKey('search-previous')), findsNothing);
     expect(find.byKey(const ValueKey('search-next')), findsNothing);
   });
+
+  group('result rows render with the resolved DF-031 font chain', () {
+    const traditional =
+        '# 漢字排版測試\n\n這份文件用來驗證繁體中文的字型渲染。\n\n'
+        '## 繁體字樣本\n\n國家、學習、電腦、機器。\n';
+    const simplified =
+        '# 汉字排版测试\n\n这份文件用来验证简体中文的字型渲染。\n\n'
+        '## 简体字样本\n\n国家、学习、电脑、机器。\n';
+
+    List<String?> expectedChain(HanScript lead) => <String?>[
+      kBodyFont,
+      ...bodyFontFallbackFor(lead),
+    ];
+
+    Future<_ScriptHostState> pumpHost(
+      WidgetTester tester,
+      String source, {
+      DocumentScriptPreference preference = DocumentScriptPreference.auto,
+    }) async {
+      await tester.pumpWidget(
+        _ScriptHost(
+          document: MarkdownDocument.fromSource(
+            source,
+          ).copyWith(scriptPreference: preference),
+        ),
+      );
+      await settle(tester);
+      return tester.state<_ScriptHostState>(find.byType(_ScriptHost));
+    }
+
+    Future<void> search(WidgetTester tester, String query) async {
+      await openFromMenu(tester);
+      await tester.enterText(find.byKey(const ValueKey('search-field')), query);
+      await tester.pump(const Duration(milliseconds: 151));
+      await tester.pump();
+    }
+
+    void expectRowMatchesReader(
+      WidgetTester tester, {
+      required Finder surface,
+      required HanScript lead,
+      required String heading,
+      required String leading,
+      required String readerOnly,
+    }) {
+      final row = find.descendant(
+        of: surface,
+        matching: find.byKey(const ValueKey('search-result-0')),
+      );
+      final chain = expectedChain(lead);
+      expect(
+        _paintedFamilies(tester, find.byType(ReaderScreen), readerOnly),
+        chain,
+        reason: 'Reader paragraph',
+      );
+      expect(_paintedFamilies(tester, row, heading), chain, reason: 'title');
+      expect(_paintedFamilies(tester, row, leading), chain, reason: 'context');
+      expect(_paintedFamilies(tester, row, '中文'), chain, reason: 'match');
+    }
+
+    for (final entry in <(String, String, DocumentScriptPreference, HanScript)>[
+      (
+        'Traditional',
+        traditional,
+        DocumentScriptPreference.auto,
+        HanScript.hant,
+      ),
+      (
+        'Traditional',
+        traditional,
+        DocumentScriptPreference.simplifiedChinese,
+        HanScript.hans,
+      ),
+      ('Simplified', simplified, DocumentScriptPreference.auto, HanScript.hans),
+      (
+        'Simplified',
+        simplified,
+        DocumentScriptPreference.traditionalChinese,
+        HanScript.hant,
+      ),
+    ]) {
+      final (name, source, preference, lead) = entry;
+      testWidgets('$name under ${preference.name} matches the Reader in the '
+          'pane', (tester) async {
+        useViewport(tester, const Size(1200, 900));
+        final host = await pumpHost(tester, source, preference: preference);
+        expect(resolveHanScriptForDocument(host.document), lead);
+        await search(tester, '中文');
+        expect(find.text('1 result'), findsOneWidget);
+
+        final isTraditional = source == traditional;
+        expectRowMatchesReader(
+          tester,
+          surface: find.byKey(const ValueKey('search-pane')),
+          lead: lead,
+          heading: isTraditional ? '漢字排版測試' : '汉字排版测试',
+          leading: isTraditional ? '這份文件' : '这份文件',
+          readerOnly: isTraditional ? '國家' : '国家',
+        );
+      });
+    }
+
+    testWidgets('modal sheet rows match the Reader', (tester) async {
+      useViewport(tester, const Size(500, 700));
+      await pumpHost(tester, simplified);
+      await search(tester, '中文');
+      expect(find.byKey(const ValueKey('search-sheet')), findsOneWidget);
+
+      expectRowMatchesReader(
+        tester,
+        surface: find.byKey(const ValueKey('search-sheet')),
+        lead: HanScript.hans,
+        heading: '汉字排版测试',
+        leading: '这份文件',
+        readerOnly: '国家',
+      );
+    });
+
+    testWidgets('a language change re-renders open results in place', (
+      tester,
+    ) async {
+      useViewport(tester, const Size(1200, 900));
+      final host = await pumpHost(tester, traditional);
+      await search(tester, '中文');
+      final pane = find.byKey(const ValueKey('search-pane'));
+      Finder row() => find.descendant(
+        of: pane,
+        matching: find.byKey(const ValueKey('search-result-0')),
+      );
+      expect(
+        _paintedFamilies(tester, row(), '中文'),
+        expectedChain(HanScript.hant),
+      );
+
+      for (final (preference, lead) in <(DocumentScriptPreference, HanScript)>[
+        (DocumentScriptPreference.simplifiedChinese, HanScript.hans),
+        (DocumentScriptPreference.auto, HanScript.hant),
+      ]) {
+        host.prefer(preference);
+        await settle(tester);
+        expect(find.text('1 result'), findsOneWidget);
+        expectRowMatchesReader(
+          tester,
+          surface: pane,
+          lead: lead,
+          heading: '漢字排版測試',
+          leading: '這份文件',
+          readerOnly: '國家',
+        );
+      }
+    });
+
+    testWidgets('Latin rows keep their presentation and symbol fallbacks', (
+      tester,
+    ) async {
+      useViewport(tester, const Size(1200, 900));
+      await pumpHost(
+        tester,
+        '# Latin\n\nPlain Needle text ⚠️ ✅ → ┌─┐ ends here.\n',
+      );
+      await search(tester, 'needle');
+      expect(find.text('1 result'), findsOneWidget);
+
+      final row = find.byKey(const ValueKey('search-result-0'));
+      final chain = expectedChain(kDefaultHanScript);
+      expect(_paintedFamilies(tester, row, 'Needle'), chain);
+      expect(_paintedFamilies(tester, row, 'Plain'), chain);
+      expect(_paintedFamilies(tester, row, '⚠️'), chain);
+
+      final snippet = tester
+          .widgetList<RichText>(
+            find.descendant(of: row, matching: find.byType(RichText)),
+          )
+          .singleWhere((widget) => widget.text.toPlainText().contains('⚠️'));
+      expect(snippet.maxLines, 3);
+      expect(snippet.overflow, TextOverflow.ellipsis);
+      expect(snippet.textScaler, TextScaler.noScaling);
+      final root = snippet.text as TextSpan;
+      expect(root.style?.color, ReaderPalette.light.muted);
+      expect(root.style?.height, 1.35);
+      expect(root.style?.fontSize, isNull);
+      expect(root.style?.fontWeight, isNull);
+      expect(root.style?.letterSpacing, isNull);
+      final match = root.children!.whereType<TextSpan>().singleWhere(
+        (span) => span.text == 'Needle',
+      );
+      expect(match.style?.color, ReaderPalette.light.text);
+      expect(match.style?.fontWeight, FontWeight.w700);
+      expect(
+        match.style?.backgroundColor,
+        ReaderPalette.light.link.withValues(alpha: 0.18),
+      );
+      expect(match.style?.fontFamily, isNull);
+      expect(match.style?.fontFamilyFallback, isNull);
+    });
+  });
+}
+
+/// The engine family chain for the painted run containing [needle] within
+/// [scope], resolving span styles exactly as nested [TextSpan]s inherit them.
+List<String?> _paintedFamilies(
+  WidgetTester tester,
+  Finder scope,
+  String needle,
+) {
+  List<String?>? familiesIn(InlineSpan span, TextStyle? inherited) {
+    final style = inherited == null ? span.style : inherited.merge(span.style);
+    if (span is! TextSpan) return null;
+    if (span.text?.contains(needle) ?? false) {
+      return <String?>[style?.fontFamily, ...?style?.fontFamilyFallback];
+    }
+    for (final child in span.children ?? const <InlineSpan>[]) {
+      final found = familiesIn(child, style);
+      if (found != null) return found;
+    }
+    return null;
+  }
+
+  for (final paragraph in tester.renderObjectList<RenderParagraph>(
+    find.descendant(of: scope, matching: find.byType(RichText)),
+  )) {
+    final families = familiesIn(paragraph.text, null);
+    if (families != null) return families;
+  }
+  fail('No painted run in $scope contains "$needle"');
+}
+
+/// A Reader whose app theme follows its document's resolved Han script, as
+/// the application shell builds it.
+class _ScriptHost extends StatefulWidget {
+  const _ScriptHost({required this.document});
+
+  final MarkdownDocument document;
+
+  @override
+  State<_ScriptHost> createState() => _ScriptHostState();
+}
+
+class _ScriptHostState extends State<_ScriptHost> {
+  late MarkdownDocument document = widget.document;
+
+  void prefer(DocumentScriptPreference preference) => setState(
+    () => document = document.copyWith(scriptPreference: preference),
+  );
+
+  @override
+  Widget build(BuildContext context) => MaterialApp(
+    theme: buildAppTheme(
+      ReaderPalette.light,
+      script: resolveHanScriptForDocument(document),
+    ),
+    home: ReaderScreen(
+      key: const ValueKey('script-host-reader'),
+      document: document,
+      settings: const Settings(),
+      onSettingsChanged: (_) {},
+      onScriptPreferenceChanged: prefer,
+      onEdit: () {},
+      onLoadFile: () {},
+      onReturnHome: () {},
+      onPositionChanged: (_) {},
+    ),
+  );
 }
 
 /// Observes and drives the pane results list for active-row reveal tests.

@@ -341,7 +341,7 @@ class SearchSurface extends StatelessWidget {
                             fontWeight: FontWeight.w600,
                           ),
                         ),
-                  subtitle: _snippet(match.snippet),
+                  subtitle: _snippet(context, match.snippet),
                   trailing: Text(
                     '${match.ordinal}',
                     style: TextStyle(color: palette.muted),
@@ -367,11 +367,20 @@ class SearchSurface extends StatelessWidget {
     ),
   );
 
-  Widget _snippet(SearchSnippet snippet) => RichText(
+  Widget _snippet(BuildContext context, SearchSnippet snippet) => RichText(
     maxLines: 3,
     overflow: TextOverflow.ellipsis,
     text: TextSpan(
-      style: TextStyle(color: palette.muted, height: 1.35),
+      // RichText does not inherit DefaultTextStyle, so the theme's resolved
+      // family and Han fallback chain must be carried explicitly.
+      style: TextStyle(
+        color: palette.muted,
+        height: 1.35,
+        fontFamily: DefaultTextStyle.of(context).style.fontFamily,
+        fontFamilyFallback: DefaultTextStyle.of(
+          context,
+        ).style.fontFamilyFallback,
+      ),
       children: [
         TextSpan(
           text: snippet.leadingTruncated
