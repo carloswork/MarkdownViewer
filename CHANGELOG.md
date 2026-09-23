@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.3.1 — 2026-09-23
+
+- Increased the Markdown editor text size to 16px for the demonstrated `Paste Markdown` enlargement path on the tested iPhone configuration.
+
 ## v1.3.0 — 2026-09-17
 
 - Added Search document to the reader menu. It searches the whole open document and lists the matches in document order, with the matching text emphasized. Previous and Next move from one match to the next, scrolling to the part of the document that contains it and marking that part. On wider screens search appears in a pane beside the document; on narrower screens it opens in a sheet. Your search stays in the current session and is not saved or sent anywhere.

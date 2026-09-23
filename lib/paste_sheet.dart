@@ -116,7 +116,7 @@ class _MarkdownEditorState extends State<_MarkdownEditor> {
                   textAlignVertical: TextAlignVertical.top,
                   style: TextStyle(
                     fontFamily: kCodeFont,
-                    fontSize: 14,
+                    fontSize: 16,
                     height: 1.45,
                     color: palette.text,
                   ),
