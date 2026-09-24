@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.3.2 — 2026-09-24
+
+- Fixed an issue where closing Search on wider screens could return the document to an earlier reading position.
+
 ## v1.3.1 — 2026-09-23
 
 - Increased the Markdown editor text size to 16px for the demonstrated `Paste Markdown` enlargement path on the tested iPhone configuration.

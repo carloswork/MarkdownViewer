@@ -98,6 +98,19 @@ class _ReaderScreenState extends State<ReaderScreen>
   ReadingPosition? _latest;
   Timer? _saveDebounce;
 
+  /// The Reader's own top visible position, captured once at the moment wide
+  /// Search closes.
+  ///
+  /// Closing wide Search changes the `LayoutBuilder` child's widget type (the
+  /// pane's `Row` collapses back to the plain Reader region), so the list
+  /// below is disposed and a new one takes its place. A fresh list has only
+  /// `_restore` - the position from when the page was first mounted - to
+  /// start from, which is not where reading last was. This anchor gives the
+  /// new list the current position instead, for that one transition only. It
+  /// is consumed once and cleared, so a later responsive crossing still
+  /// starts from the unchanged `_restore`.
+  ReadingPosition? _closeAnchor;
+
   bool _controlsVisible = true;
   late PrintSurfaceLease _printSurfaceLease;
 
@@ -318,9 +331,14 @@ class _ReaderScreenState extends State<ReaderScreen>
 
   // --- Reading position -----------------------------------------------------
 
-  void _onPositionsChanged() {
+  /// The Reader's current top visible block, as a [ReadingPosition], or
+  /// `null` if the list has not reported any positions yet.
+  ///
+  /// Shared by [_onPositionsChanged] and the close anchor capture, so both
+  /// agree on what "the current position" means.
+  ReadingPosition? _topVisiblePosition() {
     final positions = _positionsListener.itemPositions.value;
-    if (positions.isEmpty) return;
+    if (positions.isEmpty) return null;
 
     // The top-most block that is still at least partly on screen.
     ItemPosition? top;
@@ -328,9 +346,9 @@ class _ReaderScreenState extends State<ReaderScreen>
       if (position.itemTrailingEdge <= 0) continue;
       if (top == null || position.index < top.index) top = position;
     }
-    if (top == null) return;
+    if (top == null) return null;
 
-    _latest = ReadingPosition(
+    return ReadingPosition(
       documentId: widget.document.id,
       blockIndex: top.index,
       // itemLeadingEdge is <= 0 once scrolled into a block; stored positive as
@@ -339,6 +357,12 @@ class _ReaderScreenState extends State<ReaderScreen>
       headingText: _headingBefore(top.index),
       savedAt: DateTime.now(),
     );
+  }
+
+  void _onPositionsChanged() {
+    final position = _topVisiblePosition();
+    if (position == null) return;
+    _latest = position;
 
     _saveDebounce?.cancel();
     _saveDebounce = Timer(const Duration(milliseconds: 500), _flushPosition);
@@ -637,6 +661,11 @@ class _ReaderScreenState extends State<ReaderScreen>
 
   void _closeSearchSession() {
     _searchDebounce?.cancel();
+    // Capture where reading actually is right now, before the state change
+    // below remounts the list (see `_closeAnchor`). Left untouched if the
+    // list has not reported a position yet.
+    final current = _topVisiblePosition();
+    if (current != null) _closeAnchor = current;
     if (_searchSheetOpen) Navigator.of(context).maybePop();
     _notifySearch(() {
       _searchOpen = false;
@@ -850,10 +879,24 @@ class _ReaderScreenState extends State<ReaderScreen>
   Widget build(BuildContext context) {
     final palette = ReaderPalette.of(context);
     final media = MediaQuery.of(context);
-    final restore = _restore;
-    final initialIndex = restore == null
+    final anchor = _closeAnchor;
+    // The one-shot close anchor takes priority over the mount-time restore,
+    // so a list that is about to be remounted by this build starts from the
+    // current position rather than from where the page was first mounted.
+    final startPosition = anchor ?? _restore;
+    final initialIndex = startPosition == null
         ? 0
-        : restore.blockIndex.clamp(0, math.max(0, _blocks.length - 1)).toInt();
+        : startPosition.blockIndex
+              .clamp(0, math.max(0, _blocks.length - 1))
+              .toInt();
+    if (anchor != null) {
+      // Consumed once: cleared after this frame so a later remount (a
+      // responsive crossing, for example) still starts from `_restore`.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _closeAnchor = null;
+      });
+    }
 
     final bindings = <ShortcutActivator, VoidCallback>{
       const SingleActivator(LogicalKeyboardKey.keyF, control: true): () =>
@@ -882,7 +925,9 @@ class _ReaderScreenState extends State<ReaderScreen>
               media: media,
               readerWidth: readerWidth,
               initialIndex: initialIndex,
-              initialAlignment: restore == null ? 0 : -restore.fraction,
+              initialAlignment: startPosition == null
+                  ? 0
+                  : -startPosition.fraction,
               usesPane: usesPane,
             );
 
