@@ -110,6 +110,9 @@ class _ReaderScreenState extends State<ReaderScreen>
   bool? _readerBesidePane;
 
   bool _controlsVisible = true;
+
+  /// Set while a menu choice waits for the menu to finish closing.
+  bool _menuClosing = false;
   late PrintSurfaceLease _printSurfaceLease;
 
   final TextEditingController _searchController = TextEditingController();
@@ -817,23 +820,28 @@ class _ReaderScreenState extends State<ReaderScreen>
   }
 
   Future<void> _openMenu() async {
+    if (_menuClosing) return;
     final palette = ReaderPalette.of(context);
+    final menuKey = GlobalKey();
     final action = await showModalBottomSheet<_MenuAction>(
       context: context,
       backgroundColor: palette.background,
       isScrollControlled: true,
-      builder: (context) => _ReaderMenu(
-        document: widget.document,
-        palette: palette,
-        hasToc: _toc.isNotEmpty,
-        // Only when the document draws on the shipped Han repertoires at all.
-        // Otherwise the menu looks exactly as it did before DF-031, and a stored
-        // preference - if one somehow exists - is inert, because no character is
-        // ever looked up in either pack (plan.md §5.6.4).
-        hasHan: sourceUsesShippedHan(widget.document.source),
-        languageSubtitle: scriptPreferenceSubtitle(
-          widget.document.scriptPreference,
-          _detectedScript,
+      builder: (context) => KeyedSubtree(
+        key: menuKey,
+        child: _ReaderMenu(
+          document: widget.document,
+          palette: palette,
+          hasToc: _toc.isNotEmpty,
+          // Only when the document draws on the shipped Han repertoires at
+          // all. Otherwise the menu looks exactly as it did before DF-031, and
+          // a stored preference - if one somehow exists - is inert, because no
+          // character is ever looked up in either pack (plan.md §5.6.4).
+          hasHan: sourceUsesShippedHan(widget.document.source),
+          languageSubtitle: scriptPreferenceSubtitle(
+            widget.document.scriptPreference,
+            _detectedScript,
+          ),
         ),
       ),
     );
@@ -844,6 +852,8 @@ class _ReaderScreenState extends State<ReaderScreen>
         final target = await showTocSheet(context, _toc);
         if (target != null) _jumpTo(target);
       case _MenuAction.search:
+        await _waitForMenuToClose(menuKey);
+        if (!mounted) return;
         await _openOrFocusSearch();
       case _MenuAction.appearance:
         await showSettingsSheet(
@@ -863,7 +873,29 @@ class _ReaderScreenState extends State<ReaderScreen>
       case _MenuAction.loadFile:
         widget.onLoadFile();
       case _MenuAction.home:
+        await _waitForMenuToClose(menuKey);
+        if (!mounted) return;
         widget.onReturnHome();
+    }
+  }
+
+  /// Waits until the menu sheet has finished closing.
+  ///
+  /// Opening Search and returning to main both replace the Reader's list (or
+  /// the Reader itself). Doing that under a sheet that is still on screen can
+  /// leave the web accessibility tree failing on every later update, and while
+  /// it fails the reading position stops being tracked.
+  ///
+  /// Until then the menu and the Search shortcut are ignored, so a second
+  /// menu or an early Search cannot land under the closing sheet.
+  Future<void> _waitForMenuToClose(GlobalKey menuKey) async {
+    _menuClosing = true;
+    try {
+      while (mounted && menuKey.currentContext != null) {
+        await WidgetsBinding.instance.endOfFrame;
+      }
+    } finally {
+      _menuClosing = false;
     }
   }
 
@@ -874,10 +906,12 @@ class _ReaderScreenState extends State<ReaderScreen>
     final palette = ReaderPalette.of(context);
     final media = MediaQuery.of(context);
     final bindings = <ShortcutActivator, VoidCallback>{
-      const SingleActivator(LogicalKeyboardKey.keyF, control: true): () =>
-          unawaited(_openOrFocusSearch()),
-      const SingleActivator(LogicalKeyboardKey.keyF, meta: true): () =>
-          unawaited(_openOrFocusSearch()),
+      const SingleActivator(LogicalKeyboardKey.keyF, control: true): () {
+        if (!_menuClosing) unawaited(_openOrFocusSearch());
+      },
+      const SingleActivator(LogicalKeyboardKey.keyF, meta: true): () {
+        if (!_menuClosing) unawaited(_openOrFocusSearch());
+      },
       if (_searchOpen && (_usesSearchPane ?? false))
         const SingleActivator(LogicalKeyboardKey.escape): _closeSearchSession,
     };
