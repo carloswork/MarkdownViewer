@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.3.3 — 2026-09-26
+
+- Fixed an issue where opening Search on wider screens, or resizing between wider and narrower screens while Search is open, could return the document to an earlier reading position.
+
 ## v1.3.2 — 2026-09-24
 
 - Fixed an issue where closing Search on wider screens could return the document to an earlier reading position.
