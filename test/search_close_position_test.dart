@@ -16,9 +16,10 @@ import 'support/fake_storage.dart';
 /// Where the Reader stands after Search closes.
 ///
 /// The contract: closing Search must preserve the latest deliberate Reader
-/// position, not restore the mount-time one. The fix is a one-shot anchor
-/// captured on close only; opening Search is not changed. Every route also
-/// prints one `DF063 {json}` observation line with the raw positions.
+/// position, not restore the mount-time one. Opening Search preserves the
+/// position too; its own contract tests are in
+/// `search_open_position_test.dart`. Every route also prints one
+/// `DF063 {json}` observation line with the raw positions.
 ///
 /// Positions are read from the Reader list's own item positions, so "visible"
 /// means a block of that section is at least partly inside the Reader
@@ -317,10 +318,8 @@ void main() {
       'openReplacedListState': openReplaced,
       'reportedSectionAfterClose': lastReportedSection(tester),
     });
-    // F3 (opening moves the Reader to the mount-time K) is not changed by
-    // the close-only fix and is not asserted here; it is a separate, known
-    // behavior. What close does with M is likewise not asserted (nothing is
-    // captured on open).
+    // What open does with M is asserted by the open-position contract
+    // (`search_open_position_test.dart`, and `F4-R` below), not here.
     //
     // The contract is what close does with whatever position open left:
     // the post-open position is preserved on close.
@@ -681,7 +680,7 @@ void main() {
     }
 
     testWidgets(
-      'F4 retained position under ON: open still jumps to K, close '
+      'F4 retained position under ON: open preserves M, close '
       'preserves the X-area position',
       (tester) async {
         useViewport(tester, wide);
@@ -690,6 +689,7 @@ void main() {
         await continueReading(tester);
         final mounted = snapshot(tester);
         await manualScroll(tester, -2400);
+        final atM = snapshot(tester);
         await afterDebounce(tester);
         await store.settlePendingOperations();
         final storedAtM = storedSection();
@@ -713,9 +713,10 @@ void main() {
           'afterClose': after,
           'storedBlockAfterClose': storedBlockAfterClose,
         });
-        // Known, not fixed (the fix is close-only): opening still remounts
-        // the list from the mount-time restore K.
-        expect(afterOpen['topSection'], k);
+        // Opening preserves M rather than remounting the list at the
+        // mount-time restore K.
+        expectPreserved(atM, afterOpen);
+        expect(afterOpen['topSection'], isNot(k), reason: 'not K');
         // Contract: the stored position after close is within ±2 blocks of
         // the stored position before close - the X area - and not K.
         expect(
