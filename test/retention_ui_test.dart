@@ -1879,4 +1879,6 @@ Future<void> returnHome(WidgetTester tester) async {
   await settle(tester);
   await tester.tap(find.text('Return to main'));
   await settle(tester);
+  // Home replaces the Reader only once the menu has finished closing.
+  await settle(tester);
 }
