@@ -98,18 +98,16 @@ class _ReaderScreenState extends State<ReaderScreen>
   ReadingPosition? _latest;
   Timer? _saveDebounce;
 
-  /// The Reader's own top visible position, captured once at the moment wide
-  /// Search closes.
+  /// Whether the last layout placed the Reader beside the persistent Search
+  /// pane (`true`) or on its own (`false`); `null` before the first layout.
   ///
-  /// Closing wide Search changes the `LayoutBuilder` child's widget type (the
-  /// pane's `Row` collapses back to the plain Reader region), so the list
-  /// below is disposed and a new one takes its place. A fresh list has only
-  /// `_restore` - the position from when the page was first mounted - to
-  /// start from, which is not where reading last was. This anchor gives the
-  /// new list the current position instead, for that one transition only. It
-  /// is consumed once and cleared, so a later responsive crossing still
-  /// starts from the unchanged `_restore`.
-  ReadingPosition? _closeAnchor;
+  /// Moving between the two - opening or closing wide Search, or crossing the
+  /// pane breakpoint while Search is open - changes the `LayoutBuilder`
+  /// child's widget type, so the list below is disposed and a new one takes
+  /// its place. `_restore` is where the page was first mounted, not where
+  /// reading is now, so on such a switch the new list starts from the old
+  /// list's live position instead. `_restore` serves only the first list.
+  bool? _readerBesidePane;
 
   bool _controlsVisible = true;
   late PrintSurfaceLease _printSurfaceLease;
@@ -334,8 +332,9 @@ class _ReaderScreenState extends State<ReaderScreen>
   /// The Reader's current top visible block, as a [ReadingPosition], or
   /// `null` if the list has not reported any positions yet.
   ///
-  /// Shared by [_onPositionsChanged] and the close anchor capture, so both
-  /// agree on what "the current position" means.
+  /// Shared by [_onPositionsChanged] and the start position of a remounted
+  /// list (see `_readerBesidePane`), so both agree on what "the current
+  /// position" means.
   ReadingPosition? _topVisiblePosition() {
     final positions = _positionsListener.itemPositions.value;
     if (positions.isEmpty) return null;
@@ -661,11 +660,6 @@ class _ReaderScreenState extends State<ReaderScreen>
 
   void _closeSearchSession() {
     _searchDebounce?.cancel();
-    // Capture where reading actually is right now, before the state change
-    // below remounts the list (see `_closeAnchor`). Left untouched if the
-    // list has not reported a position yet.
-    final current = _topVisiblePosition();
-    if (current != null) _closeAnchor = current;
     if (_searchSheetOpen) Navigator.of(context).maybePop();
     _notifySearch(() {
       _searchOpen = false;
@@ -879,25 +873,6 @@ class _ReaderScreenState extends State<ReaderScreen>
   Widget build(BuildContext context) {
     final palette = ReaderPalette.of(context);
     final media = MediaQuery.of(context);
-    final anchor = _closeAnchor;
-    // The one-shot close anchor takes priority over the mount-time restore,
-    // so a list that is about to be remounted by this build starts from the
-    // current position rather than from where the page was first mounted.
-    final startPosition = anchor ?? _restore;
-    final initialIndex = startPosition == null
-        ? 0
-        : startPosition.blockIndex
-              .clamp(0, math.max(0, _blocks.length - 1))
-              .toInt();
-    if (anchor != null) {
-      // Consumed once: cleared after this frame so a later remount (a
-      // responsive crossing, for example) still starts from `_restore`.
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        _closeAnchor = null;
-      });
-    }
-
     final bindings = <ShortcutActivator, VoidCallback>{
       const SingleActivator(LogicalKeyboardKey.keyF, control: true): () =>
           unawaited(_openOrFocusSearch()),
@@ -915,7 +890,24 @@ class _ReaderScreenState extends State<ReaderScreen>
           builder: (context, constraints) {
             final usesPane = usesPersistentSearchPane(constraints.maxWidth);
             _observeSearchMode(usesPane);
-            final readerWidth = _searchOpen && usesPane
+            final besidePane = _searchOpen && usesPane;
+            final wasBesidePane = _readerBesidePane;
+            _readerBesidePane = besidePane;
+            // A switch remounts the list (see `_readerBesidePane`), so it
+            // starts from the old list's live position, which is still the
+            // last one reported. Otherwise the list either is the first one
+            // or already exists and ignores its initial position.
+            final startPosition =
+                (wasBesidePane != null && wasBesidePane != besidePane
+                    ? _topVisiblePosition()
+                    : null) ??
+                _restore;
+            final initialIndex = startPosition == null
+                ? 0
+                : startPosition.blockIndex
+                      .clamp(0, math.max(0, _blocks.length - 1))
+                      .toInt();
+            final readerWidth = besidePane
                 ? constraints.maxWidth -
                       kSearchPaneWidth -
                       kSearchPaneDividerWidth
