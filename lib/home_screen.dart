@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show appBuildName;
 
 import 'home_widgets.dart';
 import 'markdown_theme.dart';
@@ -17,6 +18,9 @@ import 'retention.dart';
 /// the Settings entry says whether it is on, so default OFF is visible before
 /// the first document is opened. Retention notices, and the recovery control a
 /// notice asks for, stay here as well.
+///
+/// Home ends with the version of the code running in this browser, taken from
+/// the build itself. It names what is running, not what is deployed.
 class HomeScreen extends StatelessWidget {
   const HomeScreen({
     super.key,
@@ -190,6 +194,19 @@ class HomeScreen extends StatelessWidget {
                       palette: palette,
                       onTap: onOpenSettings,
                     ),
+
+                    // DF-064: a footer beside the card, not inside it, so it
+                    // joins neither the Settings tap target nor its
+                    // announcement. With no version in the build there is
+                    // nothing to name, so nothing is shown - not even the gap.
+                    if (appBuildName != null) ...[
+                      const SizedBox(height: 16),
+                      Text(
+                        'Version $appBuildName',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 12, color: palette.muted),
+                      ),
+                    ],
                   ],
                 ),
               ),

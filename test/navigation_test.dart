@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show appBuildName;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:markdown_viewer/file_loader.dart';
 import 'package:markdown_viewer/han_script.dart';
@@ -168,12 +169,57 @@ void main() {
       final pasteY = tester.getTopLeft(find.text('Paste Markdown')).dy;
 
       final settingsY = tester.getTopLeft(find.text('Settings')).dy;
+      final versionY = tester.getTopLeft(find.text('Version $appBuildName')).dy;
 
       expect(continueY, lessThan(loadY));
       expect(loadY, lessThan(pasteY));
       // DF-039: Settings holds what is set once and left alone, so it follows
       // the document actions.
       expect(pasteY, lessThan(settingsY));
+      // DF-064: the running version closes Home, beneath Settings.
+      expect(settingsY, lessThan(versionY));
+    });
+
+    testWidgets('the running version is shown beneath Settings, outside its '
+        'control', (tester) async {
+      var opened = 0;
+
+      await tester.pumpWidget(
+        host(
+          HomeScreen(
+            retention: const RetentionHomeState(
+              keepForNextTime: false,
+              continueOffer: ContinueOffer.currentSession,
+              alerts: [],
+              recovery: false,
+            ),
+            document: MarkdownDocument.fromSource('# Stored'),
+            onContinue: () {},
+            onPaste: () {},
+            onLoadFile: () {},
+            onOpenSettings: () => opened++,
+            onRemoveRetainedData: () {},
+          ),
+        ),
+      );
+
+      // The label is built from the build's own version, so a pubspec that
+      // lost its `version` fails here instead of silently hiding the label.
+      expect(appBuildName, isNotNull);
+      final version = find.text('Version $appBuildName');
+      expect(version, findsOneWidget);
+
+      // It sits beside the Settings card, not inside it: tapping it is not a
+      // way into Settings.
+      await tester.ensureVisible(version);
+      await tester.pump();
+      await tester.tap(version);
+      await tester.pump();
+      expect(opened, 0);
+
+      await tester.tap(find.text('Settings'));
+      await tester.pump();
+      expect(opened, 1);
     });
 
     testWidgets('without a document, load still sits above paste', (

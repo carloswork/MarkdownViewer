@@ -1319,6 +1319,9 @@ void main() {
       expect(tester.takeException(), isNull);
       expect(find.text('Continue reading'), findsOneWidget);
       expect(find.text('Keep for next time is on'), findsOneWidget);
+      // DF-064: the version label adds to that load without overflowing it.
+      expect(find.text('Version $appBuildName'), findsOneWidget);
+      expect(tester.takeException(), isNull);
 
       await openSettings(tester);
       expect(tester.takeException(), isNull);
@@ -1342,6 +1345,9 @@ void main() {
         'Load from file',
         'Paste Markdown',
         'Settings',
+        // DF-064: not a control, but the last thing on Home, so it proves the
+        // whole screen scrolls into reach.
+        'Version $appBuildName',
       ]) {
         await tester.ensureVisible(find.text(control));
         await settle(tester);
@@ -1359,6 +1365,47 @@ void main() {
         expect(find.text(control), findsOneWidget, reason: control);
       }
       expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Home does not overflow with enlarged text on a small phone', (
+      tester,
+    ) async {
+      // DF-064: 2.0 doubles every Home text size, past the 1.60 already
+      // exercised, so the added label is tested where Home is tightest.
+      tester.view.physicalSize = const Size(360, 640);
+      tester.view.devicePixelRatio = 1.0;
+      tester.platformDispatcher.textScaleFactorTestValue = 2.0;
+      addTearDown(tester.view.reset);
+      addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+
+      seedRetained();
+      await launch(tester);
+      expect(tester.takeException(), isNull);
+
+      final version = find.text('Version $appBuildName');
+      await tester.ensureVisible(version);
+      await settle(tester);
+      expect(version, findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('the version label is readable text, separate from the '
+        'Settings announcement', (tester) async {
+      await launch(tester);
+
+      final handle = tester.ensureSemantics();
+
+      // An exact match on a node of its own: this finds nothing if the label
+      // were inside the Settings card, whose semantics exclude their subtree,
+      // or were merged into another node.
+      expect(find.bySemanticsLabel('Version $appBuildName'), findsOneWidget);
+
+      // Supplementary: the Settings announcement is unchanged by it.
+      final settings = tester.getSemantics(annotationFor('Settings'));
+      expect(settings.label, 'Settings');
+      expect(settings.hint, isNot(contains('Version')));
+
+      handle.dispose();
     });
 
     // plan.md §23 item 16 requires the controls to be keyboard-discoverable,
