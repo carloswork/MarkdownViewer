@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.4.0 — 2026-09-27
+
+- Added the running app version beneath Settings on the main screen.
+
 ## v1.3.3 — 2026-09-26
 
 - Fixed an issue where opening Search on wider screens, or resizing between wider and narrower screens while Search is open, could return the document to an earlier reading position.
