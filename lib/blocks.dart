@@ -375,11 +375,40 @@ class RemoteImagePlaceholder extends StatelessWidget {
   final ReaderPalette palette;
   final void Function(String url) onOpen;
 
-  bool get _isRemote => url.startsWith('http://') || url.startsWith('https://');
+  static bool _isRemoteUrl(String url) =>
+      url.startsWith('http://') || url.startsWith('https://');
+
+  bool get _isRemote => _isRemoteUrl(url);
+
+  /// The generated status sentence shown for a remote image.
+  static const String remoteStatus =
+      'Remote image not loaded. Tap to open it in a new tab.';
+
+  /// The generated status sentence shown for a non-remote image.
+  static const String localStatus = 'Image not available offline.';
+
+  /// The visible text lines this placeholder renders, top to bottom: the
+  /// alt/fallback label, the generated status sentence, and (for a remote
+  /// image) the displayed URL. Single source of truth for both `build` and
+  /// DF-052 Search capture (decision.md D-004), so the searchable text cannot
+  /// drift from what is drawn.
+  static List<String> displayedTextLines({
+    required String url,
+    required String alt,
+  }) {
+    final isRemote = _isRemoteUrl(url);
+    return <String>[
+      alt.isNotEmpty ? alt : 'Image',
+      isRemote ? remoteStatus : localStatus,
+      if (isRemote) url,
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
-    final label = alt.isNotEmpty ? alt : 'Image';
+    final lines = displayedTextLines(url: url, alt: alt);
+    final label = lines[0];
+    final status = lines[1];
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
@@ -418,17 +447,18 @@ class RemoteImagePlaceholder extends StatelessWidget {
               ),
               const SizedBox(height: 4),
               Text(
-                _isRemote
-                    ? 'Remote image not loaded. Tap to open it in a new tab.'
-                    : 'Image not available offline.',
+                status,
                 style: TextStyle(fontSize: 12, color: palette.muted),
               ),
               if (_isRemote) ...[
                 const SizedBox(height: 2),
+                // DF-052 D-004: Search indexes the full URL, so the full URL
+                // must be presented. It wraps across as many lines as needed
+                // (at the URL's break opportunities) rather than ellipsizing a
+                // hidden suffix, so no searchable literal is concealed.
                 Text(
                   url,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
+                  softWrap: true,
                   style: TextStyle(
                     fontFamily: kCodeFont,
                     fontSize: 11,

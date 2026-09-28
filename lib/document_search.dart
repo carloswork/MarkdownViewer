@@ -1,5 +1,7 @@
 import 'package:markdown/markdown.dart' as md;
 
+import 'reader_text_unit.dart';
+
 /// The exact parser version is pinned in pubspec.yaml. These options mirror
 /// markdown_widget 2.3.2+8's MarkdownGenerator defaults.
 final RegExp markdownWidgetLineSplitter = RegExp(r'(\r?\n)|(\r)');
@@ -61,6 +63,8 @@ class SearchMatch {
     required this.end,
     required this.heading,
     required this.snippet,
+    this.ownerId,
+    this.documentRevision,
   });
 
   /// One-based, query-local result ordinal.
@@ -71,6 +75,12 @@ class SearchMatch {
   final int end;
   final String? heading;
   final SearchSnippet snippet;
+
+  /// DF-052: structural occurrence owner id and revision, present on matches
+  /// produced from the render-sourced unit index ([DocumentSearchIndex.fromUnits]).
+  /// Null on matches produced by the legacy DF-041 reparse ([build]).
+  final OccurrenceOwnerId? ownerId;
+  final DocumentRevision? documentRevision;
 }
 
 class DocumentSearchResult {
@@ -121,8 +131,20 @@ class DocumentSearchResult {
 
 /// Lazy, memory-only semantic index for one Reader/document identity.
 class DocumentSearchIndex {
-  DocumentSearchIndex._(this.blocks);
+  DocumentSearchIndex._(this.blocks)
+    : _units = null,
+      _revision = null,
+      _unitsComplete = false;
 
+  DocumentSearchIndex._rendered(
+    this._units,
+    this._revision,
+    this._unitsComplete,
+  ) : blocks = const [];
+
+  /// DF-041 legacy path: an independent reparse of `source`. Retained during
+  /// CP1 for regression coverage and as the shipped fallback; the reader now
+  /// searches the render-sourced units via [fromUnits] (plan.md §7).
   factory DocumentSearchIndex.build(String source) {
     final document = md.Document(
       extensionSet: md.ExtensionSet.gitHubFlavored,
@@ -132,7 +154,26 @@ class DocumentSearchIndex {
     return DocumentSearchIndex._(_projectBlocks(nodes));
   }
 
+  /// DF-052 render-sourced path: index the text captured from the render pass.
+  ///
+  /// [complete] must be the capture-completeness result (plan.md §5.2 step 4).
+  /// [searchRendered] fails closed to the unavailable state if capture was
+  /// incomplete or the query's revision does not match [revision].
+  factory DocumentSearchIndex.fromUnits(
+    List<ReaderTextUnit> units, {
+    required DocumentRevision revision,
+    required bool complete,
+  }) => DocumentSearchIndex._rendered(
+    List<ReaderTextUnit>.unmodifiable(units),
+    revision,
+    complete,
+  );
+
   final List<SearchBlock> blocks;
+
+  final List<ReaderTextUnit>? _units;
+  final DocumentRevision? _revision;
+  final bool _unitsComplete;
 
   int get retainedTextCodeUnits =>
       blocks.fold(0, (total, block) => total + block.retainedTextCodeUnits);
@@ -183,6 +224,66 @@ class DocumentSearchIndex {
               ),
             );
           }
+        }
+      }
+    }
+
+    return DocumentSearchResult.available(
+      query: query,
+      total: total,
+      matches: List.unmodifiable(matches),
+    );
+  }
+
+  /// Searches the render-sourced units (plan.md §7).
+  ///
+  /// Fails closed to [DocumentSearchResult.unavailable] with no anchors if the
+  /// capture was incomplete or [currentRevision] does not match the revision the
+  /// units were captured for — the revision-consistency + capture-completeness
+  /// check that replaces the DF-041 top-level `renderedBlockCount` guard.
+  DocumentSearchResult searchRendered(
+    String input, {
+    required DocumentRevision currentRevision,
+  }) {
+    final query = input.trim();
+    final units = _units;
+    if (units == null || !_unitsComplete || _revision != currentRevision) {
+      return DocumentSearchResult.unavailable(query);
+    }
+    if (query.isEmpty) {
+      return const DocumentSearchResult.available(
+        query: '',
+        total: 0,
+        matches: [],
+      );
+    }
+
+    final expression = RegExp(RegExp.escape(query), caseSensitive: false);
+    final matches = <SearchMatch>[];
+    var total = 0;
+
+    for (final unit in units) {
+      final text = unit.text;
+      for (final segment in _newlineFreeSegments(text)) {
+        for (final match in expression.allMatches(segment.text)) {
+          total++;
+          if (matches.length >= maxRetainedSearchAnchors) continue;
+
+          final start = segment.offset + match.start;
+          final end = segment.offset + match.end;
+          matches.add(
+            SearchMatch(
+              ordinal: total,
+              blockIndex: unit.blockIndex,
+              runIndex: 0,
+              start: start,
+              end: end,
+              heading: unit.heading,
+              snippet: _snippet(text, start, end),
+              ownerId: unit.id,
+              documentRevision: currentRevision,
+            ),
+          );
         }
       }
     }

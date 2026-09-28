@@ -13,6 +13,7 @@ import 'links.dart';
 import 'markdown_theme.dart';
 import 'models.dart';
 import 'print_surface.dart';
+import 'reader_text_unit.dart';
 import 'script_rendering_sheet.dart';
 import 'search_surface.dart';
 import 'settings_sheet.dart';
@@ -93,6 +94,13 @@ class _ReaderScreenState extends State<ReaderScreen>
   List<Widget> _blocks = const [];
   List<TocEntry> _toc = const [];
   String? _blocksKey;
+
+  /// DF-052 CP1: the render-sourced Reader/Search text units captured during the
+  /// same `buildWidgets` pass that produces [_blocks], the document revision they
+  /// were captured for, and whether that capture was complete (plan.md §5).
+  List<ReaderTextUnit> _readerTextUnits = const [];
+  DocumentRevision? _readerRevision;
+  bool _readerUnitsComplete = false;
 
   ReadingPosition? _restore;
   ReadingPosition? _latest;
@@ -270,21 +278,32 @@ class _ReaderScreenState extends State<ReaderScreen>
     final palette = ReaderPalette.of(context);
     final document = widget.document;
     final script = _resolvedScript;
-    final key = [
-      document.id,
-      document.updatedAt.microsecondsSinceEpoch,
+    final revision = DocumentRevision.fromDocument(
+      id: document.id,
+      updatedAt: document.updatedAt,
+      source: document.source,
+    );
+    // The render key holds only the layout-affecting inputs that can change
+    // *without* the document revision moving: theme, code wrap, and the
+    // resolved script. §5.5 fact 2: setting a preference deliberately does not
+    // change `updatedAt`, so it must be keyed here or a language change would
+    // return early and silently keep the old chain. The *resolved* script is
+    // used rather than the raw preference because it also covers the `auto`
+    // case, where an edit can change what detection returns without the
+    // preference moving at all.
+    final renderKey = [
       palette.isDark,
       widget.settings.wrapCode,
-      // §5.5 fact 2. Setting a preference deliberately does not change
-      // `updatedAt`, so none of the four components above changes when the
-      // language changes and this method would return early, silently keeping
-      // the old chain. The *resolved* script is used rather than the raw
-      // preference because it also covers the `auto` case, where an edit can
-      // change what detection returns without the preference moving at all.
       script.name,
     ].join('|');
 
-    if (key == _blocksKey) return;
+    // Source-sensitive early return. The document revision — `id`, `updatedAt`
+    // and `source`, compared by value rather than a collision-prone hash —
+    // guards the rendered blocks/units, so a same-ID/same-timestamp `source`
+    // replacement still rebuilds them and the index. A pure theme/wrap/script
+    // re-render leaves the revision unchanged and only the render key moves, so
+    // the built index survives it (§4.2).
+    if (revision == _readerRevision && renderKey == _blocksKey) return;
 
     final config = buildMarkdownConfig(
       palette: palette,
@@ -294,9 +313,14 @@ class _ReaderScreenState extends State<ReaderScreen>
     );
 
     final entries = <TocEntry>[];
+    // DF-052 CP1: capture the shared Reader/Search text units from the same
+    // render pass. The units are the Search truth; painting is CP2.
+    final capture = ReaderTextUnitCapture();
     final blocks =
         MarkdownGenerator(
           linesMargin: const EdgeInsets.symmetric(vertical: 5),
+          generators: capture.generators,
+          onNodeAccepted: capture.onNodeAccepted,
         ).buildWidgets(
           document.source,
           config: config,
@@ -315,9 +339,17 @@ class _ReaderScreenState extends State<ReaderScreen>
           },
         );
 
+    final captureResult = capture.finish();
     _blocks = blocks;
     _toc = entries;
-    _blocksKey = key;
+    _blocksKey = renderKey;
+    _readerTextUnits = captureResult.units;
+    _readerUnitsComplete = captureResult.isComplete;
+    // A new document revision's units invalidate any prior search index. A pure
+    // theme/wrap/script re-render keeps the same revision (text is
+    // layout-independent), so a built index survives it (plan.md §4.2).
+    if (revision != _readerRevision) _searchIndex = null;
+    _readerRevision = revision;
   }
 
   Future<void> _openLink(String url) async {
@@ -435,10 +467,16 @@ class _ReaderScreenState extends State<ReaderScreen>
     await WidgetsBinding.instance.endOfFrame;
     if (!mounted || !_searchOpen || _searchIndex != null) return;
 
-    final index = DocumentSearchIndex.build(widget.document.source);
-    final result = index.search(
+    final revision = _readerRevision;
+    if (revision == null) return;
+    final index = DocumentSearchIndex.fromUnits(
+      _readerTextUnits,
+      revision: revision,
+      complete: _readerUnitsComplete,
+    );
+    final result = index.searchRendered(
       _searchController.text,
-      renderedBlockCount: _blocks.length,
+      currentRevision: revision,
     );
     _notifySearch(() {
       _searchIndex = index;
@@ -462,11 +500,12 @@ class _ReaderScreenState extends State<ReaderScreen>
 
   void _runSearch(String value) {
     final index = _searchIndex;
-    if (index == null) {
+    final revision = _readerRevision;
+    if (index == null || revision == null) {
       unawaited(_ensureSearchIndex());
       return;
     }
-    final result = index.search(value, renderedBlockCount: _blocks.length);
+    final result = index.searchRendered(value, currentRevision: revision);
     _notifySearch(() {
       _searchResult = result;
       _activeSearchMatchIndex = null;
