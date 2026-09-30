@@ -22,6 +22,66 @@ import 'toc_sheet.dart';
 
 enum _SearchFocusRole { field, result, previous, next, close, locator, reopen }
 
+/// Maps a placeholder-excluded UTF-16 [target] offset (as captured with
+/// `includePlaceholders:false`, so a `WidgetSpan` contributes no text) into the
+/// placeholder-inclusive offset selection geometry uses (each `WidgetSpan`
+/// counts as one code unit). Returns null when [target] cannot be resolved.
+///
+/// - [isStart] resolves at the leading boundary of the leaf containing the
+///   offset (`within < text.length`), so a start at a leaf boundary lands on the
+///   following real character rather than skipping a placeholder.
+/// - `!isStart` resolves at the trailing boundary (`within <= text.length`),
+///   never skipping past a following placeholder.
+///
+/// Exposed for direct unit testing of the boundary mapping (plan.md §9).
+@visibleForTesting
+int? offsetIncludingPlaceholders(
+  InlineSpan root,
+  int target, {
+  required bool isStart,
+}) {
+  var excluded = 0;
+  var included = 0;
+  int? result;
+  void visit(InlineSpan span) {
+    if (result != null) return;
+    if (span is TextSpan) {
+      final text = span.text;
+      if (text != null) {
+        final within = target - excluded;
+        final resolvesHere = isStart
+            ? within >= 0 && within < text.length
+            : within >= 0 && within <= text.length;
+        if (resolvesHere) {
+          result = included + within;
+          return;
+        }
+        excluded += text.length;
+        included += text.length;
+      }
+      final children = span.children;
+      if (children != null) {
+        for (final child in children) {
+          visit(child);
+          if (result != null) return;
+        }
+      }
+    } else {
+      // Placeholder (WidgetSpan): advances geometry offset, not text offset.
+      included += 1;
+    }
+  }
+
+  visit(root);
+  // A start offset that falls exactly at the end of all real text (only
+  // reachable when trailing placeholders follow) resolves to the final geometry
+  // offset; end offsets already resolve via the `<=` boundary above.
+  if (result == null && isStart && target == excluded) {
+    result = included;
+  }
+  return result;
+}
+
 /// The reading surface.
 ///
 /// One indexed list drives three requirements at once: jumping from the table
@@ -140,10 +200,17 @@ class _ReaderScreenState extends State<ReaderScreen>
   );
   final FocusNode _searchNextFocusNode = FocusNode(debugLabel: 'Next result');
   final FocusNode _searchCloseFocusNode = FocusNode(debugLabel: 'Close search');
-  final FocusNode _searchLocatorFocusNode = FocusNode(
-    debugLabel: 'Active search result',
-  );
   final ValueNotifier<int> _searchRevision = ValueNotifier(0);
+
+  /// DF-052 CP2: the per-query occurrence model published to materialized owners
+  /// and the revision-scoped registry that separates the 0–2 duplicate render
+  /// candidates from the one centrally promoted public locator (plan.md §D-1).
+  /// The failed Cycle 1 singleton `_searchLocatorFocusNode`/`GlobalKey` inside
+  /// the SPL items is deliberately removed; the locator now lives on the promoted
+  /// per-owner candidate. `_revealGeneration` supersedes in-flight reveals.
+  ReaderSearchModel _searchModel = ReaderSearchModel.empty;
+  ActiveLocatorRegistry? _activeLocatorRegistry;
+  int _revealGeneration = 0;
 
   DocumentSearchIndex? _searchIndex;
   DocumentSearchResult? _searchResult;
@@ -231,7 +298,7 @@ class _ReaderScreenState extends State<ReaderScreen>
     _searchPreviousFocusNode.dispose();
     _searchNextFocusNode.dispose();
     _searchCloseFocusNode.dispose();
-    _searchLocatorFocusNode.dispose();
+    _activeLocatorRegistry?.dispose();
     _searchRevision.dispose();
     _flushPosition();
     WidgetsBinding.instance.removeObserver(this);
@@ -321,6 +388,10 @@ class _ReaderScreenState extends State<ReaderScreen>
           linesMargin: const EdgeInsets.symmetric(vertical: 5),
           generators: capture.generators,
           onNodeAccepted: capture.onNodeAccepted,
+          // DF-052 CP2: deliver per-owner occurrence indication at mount time.
+          // Every drawing ProxyRichText/top-level span flows through here; an
+          // untagged span or an owner with no current match renders unchanged.
+          richTextBuilder: (span) => OccurrenceText(span),
         ).buildWidgets(
           document.source,
           config: config,
@@ -345,10 +416,16 @@ class _ReaderScreenState extends State<ReaderScreen>
     _blocksKey = renderKey;
     _readerTextUnits = captureResult.units;
     _readerUnitsComplete = captureResult.isComplete;
-    // A new document revision's units invalidate any prior search index. A pure
-    // theme/wrap/script re-render keeps the same revision (text is
-    // layout-independent), so a built index survives it (plan.md §4.2).
-    if (revision != _readerRevision) _searchIndex = null;
+    // A new document revision's units invalidate any prior search index and
+    // install a fresh revision-scoped locator registry; every prior candidate is
+    // discarded so a stale-revision copy cannot leak. A pure theme/wrap/script
+    // re-render keeps the same revision (text is layout-independent), so both the
+    // built index and the registry survive it (plan.md §4.2, §D-1).
+    if (revision != _readerRevision) {
+      _searchIndex = null;
+      _activeLocatorRegistry?.dispose();
+      _activeLocatorRegistry = ActiveLocatorRegistry(revision);
+    }
     _readerRevision = revision;
   }
 
@@ -435,8 +512,54 @@ class _ReaderScreenState extends State<ReaderScreen>
 
   void _notifySearch(VoidCallback update) {
     if (!mounted) return;
-    setState(update);
+    setState(() {
+      update();
+      _searchModel = _computeSearchModel();
+    });
     _searchRevision.value++;
+  }
+
+  /// Groups the current result by owner for O(1) paint-time lookup and records
+  /// the active `(owner, range)` plus its locator label (plan.md §5.6, §6.2, §7).
+  /// Returns [ReaderSearchModel.empty] whenever indication must not paint: search
+  /// closed, unavailable, or overflowed (complete-or-refine, so a partial set is
+  /// never shown as complete).
+  ReaderSearchModel _computeSearchModel() {
+    final result = _searchResult;
+    if (!_searchOpen ||
+        result == null ||
+        !result.isAvailable ||
+        result.isOverflow ||
+        result.matches.isEmpty) {
+      return ReaderSearchModel.empty;
+    }
+    final byOwner = <OccurrenceOwnerId, List<OccurrenceRange>>{};
+    for (final match in result.matches) {
+      final id = match.ownerId;
+      if (id == null) continue;
+      (byOwner[id] ??= <OccurrenceRange>[]).add(
+        OccurrenceRange(match.start, match.end),
+      );
+    }
+    OccurrenceOwnerId? activeOwner;
+    OccurrenceRange? activeRange;
+    String? activeLabel;
+    final active = _activeSearchMatchIndex;
+    if (active != null && active >= 0 && active < result.matches.length) {
+      final match = result.matches[active];
+      activeOwner = match.ownerId;
+      activeRange = OccurrenceRange(match.start, match.end);
+      final heading = match.heading;
+      activeLabel = heading == null
+          ? 'Search result ${active + 1} of ${result.total}'
+          : 'Search result ${active + 1} of ${result.total}, $heading';
+    }
+    return ReaderSearchModel(
+      byOwner: byOwner,
+      activeOwner: activeOwner,
+      activeRange: activeRange,
+      activeLabel: activeLabel,
+    );
   }
 
   Future<void> _openOrFocusSearch() async {
@@ -558,21 +681,282 @@ class _ReaderScreenState extends State<ReaderScreen>
       if (!mounted) return;
     }
 
-    final match = result.matches[index];
+    // §D-4 step 1: update the unique logical active once, mint a generation so a
+    // rapid Prev/Next/row-selection supersedes this in-flight reveal, then drive
+    // the centralized release → transport → promote-one → reveal → recheck →
+    // focus sequence. Direct activation/navigation steals focus to the locator.
+    final gen = ++_revealGeneration;
     _notifySearch(() => _activeSearchMatchIndex = index);
+    await _promoteAndReveal(index, gen, stealFocus: true);
+  }
+
+  /// The one centralized reveal control flow (plan.md §D-4): release the prior
+  /// locator, coarse-transport the owning block, select and promote exactly one
+  /// settled render candidate, reveal its own range via the outer vertical
+  /// `ScrollPosition` with a mandatory post-move recheck, and — when [stealFocus]
+  /// — move focus to the promoted node. Every step is generation-guarded so a
+  /// superseded reveal aborts. The responsive-remount entry (§D-6) calls this with
+  /// `stealFocus:false`, so indication and the single locator are restored without
+  /// stealing focus from an open sheet; automatic physical focus return to the
+  /// Reader locator after remount is deferred to DF-070 (D-007).
+  Future<void> _promoteAndReveal(
+    int index,
+    int gen, {
+    required bool stealFocus,
+  }) async {
+    final result = _searchResult;
+    final registry = _activeLocatorRegistry;
+    if (result == null ||
+        registry == null ||
+        !result.isAvailable ||
+        result.isOverflow ||
+        index < 0 ||
+        index >= result.matches.length) {
+      return;
+    }
+    final match = result.matches[index];
+    final ownerId = match.ownerId;
+    if (ownerId == null) return;
+
+    // Step 2 — release the prior public locator first (transient zero-locator).
+    registry.clearPromotion();
+
+    // Step 3 — settle before transport.
     await WidgetsBinding.instance.endOfFrame;
-    if (!mounted || !_scrollController.isAttached) return;
+    if (!mounted || gen != _revealGeneration || !_scrollController.isAttached) {
+      return;
+    }
+
+    // Step 4 — coarse block materialization (transport only; alignment ∈ [0,1]).
     await _scrollController.scrollTo(
       index: match.blockIndex,
       alignment: 0.12,
       duration: const Duration(milliseconds: 320),
       curve: Curves.easeOutCubic,
     );
-    if (!mounted) return;
+    if (!mounted || gen != _revealGeneration) return;
     await WidgetsBinding.instance.endOfFrame;
-    if (!mounted) return;
-    _searchFieldFocusNode.unfocus();
-    FocusScope.of(context).requestFocus(_searchLocatorFocusNode);
+    if (!mounted || gen != _revealGeneration) return;
+
+    // Step 5 — select exactly one settled candidate (one post-frame retry).
+    var copy = _selectSettledCandidate(registry, ownerId);
+    if (copy == null) {
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted || gen != _revealGeneration) return;
+      copy = _selectSettledCandidate(registry, ownerId);
+    }
+    if (copy == null) {
+      _routeRevealStop(
+        'no settled render candidate for the active owner after transport',
+      );
+      return;
+    }
+
+    // Step 6 — promote exactly one; let it rebuild into the exposed locator.
+    registry.promote(copy, gen);
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted || gen != _revealGeneration) return;
+
+    // Steps 7–8 — reveal the active occurrence's own range, then recheck.
+    await _revealActiveRange(match, copy, gen);
+    if (!mounted || gen != _revealGeneration) return;
+
+    // Step 9 — focus (direct activation/navigation only). The remount entry
+    // leaves focus to the role machinery / DF-070 (never steals from a sheet).
+    if (stealFocus) {
+      _searchFieldFocusNode.unfocus();
+      final node = registry.promotedFocusNode;
+      if (node != null && node.context != null && node.canRequestFocus) {
+        node.requestFocus();
+      }
+    }
+  }
+
+  /// Selects the single settled render candidate for [ownerId] (plan.md §D-1). If
+  /// two are still registered (SPL's two-list transition not yet unwound), the one
+  /// with greater vertical overlap of the viewport wins; an ambiguous tie fails
+  /// closed (null) so the caller retries once, then routes §18.8.
+  ActiveOwnerCandidate? _selectSettledCandidate(
+    ActiveLocatorRegistry registry,
+    OccurrenceOwnerId ownerId,
+  ) {
+    final candidates = registry
+        .candidatesFor(ownerId)
+        .where((c) => c.isCandidateMounted)
+        .toList();
+    if (candidates.isEmpty) return null;
+    if (candidates.length == 1) return candidates.first;
+
+    ActiveOwnerCandidate? best;
+    var bestOverlap = double.negativeInfinity;
+    var tie = false;
+    for (final candidate in candidates) {
+      final paragraph = candidate.resolveParagraph();
+      if (paragraph == null || !paragraph.hasSize) continue;
+      final viewport = _outermostViewport(paragraph);
+      if (viewport == null || !viewport.hasSize) continue;
+      final viewportTop = viewport.localToGlobal(Offset.zero).dy;
+      final viewportBottom = viewportTop + viewport.size.height;
+      final top = paragraph.localToGlobal(Offset.zero).dy;
+      final bottom = top + paragraph.size.height;
+      final overlap =
+          math.min(bottom, viewportBottom) - math.max(top, viewportTop);
+      if ((overlap - bestOverlap).abs() < 0.5) {
+        tie = true;
+      } else if (overlap > bestOverlap) {
+        bestOverlap = overlap;
+        best = candidate;
+        tie = false;
+      }
+    }
+    if (tie || best == null) return null; // fail-closed → retry / §18.8
+    return best;
+  }
+
+  /// Reveals the active occurrence's own UTF-16 range within the viewport after
+  /// its block is materialized and one candidate promoted (plan.md §D-2), with a
+  /// mandatory post-move recheck that routes §18.8 on a genuine geometry failure
+  /// rather than accepting a clamp-capped, not-actually-visible result.
+  Future<void> _revealActiveRange(
+    SearchMatch match,
+    ActiveOwnerCandidate copy,
+    int gen,
+  ) async {
+    var measure = _measureActiveRange(match, copy);
+    if (measure == null) {
+      // One post-frame retry covers late layout of the just-promoted candidate.
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted || gen != _revealGeneration) return;
+      measure = _measureActiveRange(match, copy);
+    }
+    if (measure == null) {
+      _routeRevealStop('range geometry unavailable for the active occurrence');
+      return;
+    }
+    if (measure.visible) return; // Coarse transport already sufficed.
+
+    await _animateToMeasure(measure);
+    if (!mounted || gen != _revealGeneration) return;
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted || gen != _revealGeneration) return;
+
+    measure = _measureActiveRange(match, copy);
+    if (measure == null) {
+      _routeRevealStop('range geometry unavailable after the reveal move');
+      return;
+    }
+    if (measure.visible) return;
+
+    // One post-frame retry of the delta computation and animateTo.
+    await _animateToMeasure(measure);
+    if (!mounted || gen != _revealGeneration) return;
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted || gen != _revealGeneration) return;
+
+    final recheck = _measureActiveRange(match, copy);
+    if (recheck == null || !recheck.visible) {
+      _routeRevealStop(
+        'the active occurrence range could not be brought into the viewport',
+      );
+    }
+  }
+
+  /// Measures the active range against the current viewport (plan.md §D-2). Maps
+  /// placeholder-excluded match offsets into selection geometry, unions the boxes,
+  /// resolves the outer *vertical* scrollable (skipping any inner horizontal code/
+  /// table scroller), and computes the pixel delta and already-visible flag.
+  _RangeReveal? _measureActiveRange(
+    SearchMatch match,
+    ActiveOwnerCandidate copy,
+  ) {
+    if (!copy.isCandidateMounted) return null;
+    final paragraph = copy.resolveParagraph();
+    if (paragraph == null || !paragraph.hasSize) return null;
+    if (match.start < 0 || match.start >= match.end) return null;
+    final base =
+        offsetIncludingPlaceholders(paragraph.text, match.start, isStart: true);
+    final extent =
+        offsetIncludingPlaceholders(paragraph.text, match.end, isStart: false);
+    if (base == null || extent == null) return null;
+    final rects = _selectionRects(paragraph, base, extent);
+    if (rects.isEmpty) return null;
+    var rect = rects.first;
+    for (final other in rects.skip(1)) {
+      rect = rect.expandToInclude(other);
+    }
+    final scrollable = Scrollable.maybeOf(
+      copy.candidateContext,
+      axis: Axis.vertical,
+    );
+    if (scrollable == null) return null;
+    final viewport = _outermostViewport(paragraph);
+    if (viewport == null || !viewport.hasSize) return null;
+    final viewportTop = viewport.localToGlobal(Offset.zero).dy;
+    final viewportHeight = viewport.size.height;
+    if (viewportHeight <= 0) return null;
+    final matchTop = paragraph.localToGlobal(rect.topLeft).dy;
+    final matchBottom = paragraph.localToGlobal(rect.bottomLeft).dy;
+    const margin = 24.0;
+    final visible = matchTop >= viewportTop + margin &&
+        matchBottom <= viewportTop + viewportHeight - margin;
+    final delta = matchTop - (viewportTop + margin);
+    return _RangeReveal(scrollable.position, delta, visible);
+  }
+
+  Future<void> _animateToMeasure(_RangeReveal reveal) async {
+    final position = reveal.position;
+    final target = (position.pixels + reveal.delta)
+        .clamp(position.minScrollExtent, position.maxScrollExtent)
+        .toDouble();
+    await position.animateTo(
+      target,
+      duration: const Duration(milliseconds: 240),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  /// The outermost viewport ancestor of [node] (the vertical reader list), as a
+  /// [RenderBox], or null if none is found.
+  RenderBox? _outermostViewport(RenderObject node) {
+    RenderBox? found;
+    for (RenderObject? current = node.parent;
+        current != null;
+        current = current.parent) {
+      // Test RenderBox first so flow analysis promotes `current` to RenderBox for
+      // the assignment: promotion only narrows to subtypes, and RenderBox is not
+      // a subtype of RenderAbstractViewport, so the reverse order would leave
+      // `current` as RenderAbstractViewport and fail to assign to RenderBox?.
+      if (current is RenderBox && current is RenderAbstractViewport) {
+        found = current;
+      }
+    }
+    return found;
+  }
+
+  /// The selection geometry for `[base, extent)` as paragraph-local rects, or an
+  /// empty list if the paragraph cannot report boxes.
+  List<Rect> _selectionRects(RenderParagraph paragraph, int base, int extent) {
+    try {
+      return paragraph
+          .getBoxesForSelection(
+            TextSelection(baseOffset: base, extentOffset: extent),
+          )
+          .map((box) => box.toRect())
+          .toList();
+    } catch (_) {
+      return const <Rect>[];
+    }
+  }
+
+  void _routeRevealStop(String reason) {
+    // plan.md §18.8: a genuine public-geometry gap — not an accepted block-only
+    // downgrade. Surface it loudly so CP2 tests / CP3 catch it rather than
+    // silently keeping coarse scroll or an out-of-contract alignment.
+    assert(
+      false,
+      'plan.md §18.8: $reason; block-only orientation is not accepted.',
+    );
+    debugPrint('DF-052 §18.8 reveal stop: $reason');
   }
 
   Future<void> _showSearchSheet({
@@ -702,6 +1086,10 @@ class _ReaderScreenState extends State<ReaderScreen>
 
   void _closeSearchSession() {
     _searchDebounce?.cancel();
+    // Supersede any in-flight reveal and clear the promotion so the locator and
+    // indication clear together (plan.md §D-4 Escape/close).
+    _revealGeneration++;
+    _activeLocatorRegistry?.clearPromotion();
     if (_searchSheetOpen) Navigator.of(context).maybePop();
     _notifySearch(() {
       _searchOpen = false;
@@ -720,6 +1108,8 @@ class _ReaderScreenState extends State<ReaderScreen>
 
   void _discardSearchSession() {
     _searchDebounce?.cancel();
+    _revealGeneration++;
+    _activeLocatorRegistry?.clearPromotion();
     _searchOpen = false;
     _searchPreparing = false;
     _searchSheetOpen = false;
@@ -729,6 +1119,7 @@ class _ReaderScreenState extends State<ReaderScreen>
     _searchIndex = null;
     _searchResult = null;
     _activeSearchMatchIndex = null;
+    _searchModel = ReaderSearchModel.empty;
     _searchRevision.value++;
   }
 
@@ -775,7 +1166,11 @@ class _ReaderScreenState extends State<ReaderScreen>
     if (_searchPreviousFocusNode.hasFocus) return _SearchFocusRole.previous;
     if (_searchNextFocusNode.hasFocus) return _SearchFocusRole.next;
     if (_searchCloseFocusNode.hasFocus) return _SearchFocusRole.close;
-    if (_searchLocatorFocusNode.hasFocus) return _SearchFocusRole.locator;
+    // The locator role's evidence source moved from the removed singleton to the
+    // promoted candidate's own node (plan.md §D-6); only the evidence moved.
+    if (_activeLocatorRegistry?.promotedNodeHasFocus ?? false) {
+      return _SearchFocusRole.locator;
+    }
     if (_searchReopenFocusNode.hasFocus) return _SearchFocusRole.reopen;
     return _activeSearchMatchIndex == null
         ? _SearchFocusRole.field
@@ -792,70 +1187,18 @@ class _ReaderScreenState extends State<ReaderScreen>
       _SearchFocusRole.previous => _searchPreviousFocusNode,
       _SearchFocusRole.next => _searchNextFocusNode,
       _SearchFocusRole.close => _searchCloseFocusNode,
-      _SearchFocusRole.locator => _searchLocatorFocusNode,
+      // DF-070 (D-007): automatic physical keyboard/AT focus return to the Reader
+      // locator after a responsive pane/sheet remount is deferred. The range
+      // re-reveal and single-locator promotion still run (§D-6 part 1); only this
+      // focus landing is parked. Fall back to the field so no focus trap arises;
+      // the field/result/Previous/Next arms remain mandatory and unchanged.
+      _SearchFocusRole.locator => _searchFieldFocusNode,
       _SearchFocusRole.reopen => _searchReopenFocusNode,
     };
     if (target.context == null || !target.canRequestFocus) {
       target = _searchFieldFocusNode;
     }
     if (target.context != null && target.canRequestFocus) target.requestFocus();
-  }
-
-  Widget _searchBlock(int index, ReaderPalette palette) {
-    final result = _searchResult;
-    final active = _activeSearchMatchIndex;
-    if (!_searchOpen ||
-        result == null ||
-        !result.isAvailable ||
-        result.isOverflow ||
-        active == null ||
-        result.matches[active].blockIndex != index) {
-      return _blocks[index];
-    }
-
-    final match = result.matches[active];
-    final heading = match.heading;
-    final label = heading == null
-        ? 'Search result ${active + 1} of ${result.total}'
-        : 'Search result ${active + 1} of ${result.total}, $heading';
-    return Focus(
-      focusNode: _searchLocatorFocusNode,
-      child: Semantics(
-        key: const ValueKey('active-search-locator'),
-        selected: true,
-        focusable: true,
-        label: label,
-        child: Container(
-          decoration: BoxDecoration(
-            color: palette.link.withValues(alpha: 0.08),
-            border: Border(left: BorderSide(color: palette.link, width: 4)),
-          ),
-          padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.location_searching, size: 16, color: palette.link),
-                  const SizedBox(width: 6),
-                  Text(
-                    label,
-                    style: TextStyle(
-                      color: palette.link,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 4),
-              _blocks[index],
-            ],
-          ),
-        ),
-      ),
-    );
   }
 
   Future<void> _openMenu() async {
@@ -966,6 +1309,27 @@ class _ReaderScreenState extends State<ReaderScreen>
             final besidePane = _searchOpen && usesPane;
             final wasBesidePane = _readerBesidePane;
             _readerBesidePane = besidePane;
+            // §D-6 part (1): a responsive pane/sheet remount (the
+            // `wasBesidePane != besidePane` edge — a `usesPane` change or a
+            // search open/close at constant `usesPane`) re-reveals the active
+            // occurrence's range and re-promotes exactly one locator, independent
+            // of the outgoing focus role. `stealFocus:false` so it never steals
+            // focus from an open sheet; the fresh `gen` collapses re-entrant
+            // rebuilds to one effective run. Automatic physical focus return to
+            // the Reader locator is deferred to DF-070 (D-007).
+            if (_searchOpen &&
+                _activeSearchMatchIndex != null &&
+                wasBesidePane != null &&
+                wasBesidePane != besidePane) {
+              final activeIndex = _activeSearchMatchIndex!;
+              final gen = ++_revealGeneration;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (!mounted || gen != _revealGeneration) return;
+                unawaited(
+                  _promoteAndReveal(activeIndex, gen, stealFocus: false),
+                );
+              });
+            }
             // A switch remounts the list (see `_readerBesidePane`), so it
             // starts from the old list's live position, which is still the
             // last one reported. Otherwise the list either is the first one
@@ -1046,19 +1410,40 @@ class _ReaderScreenState extends State<ReaderScreen>
           children: [
             NotificationListener<UserScrollNotification>(
               onNotification: _onUserScroll,
-              child: SelectionArea(
-                child: ScrollablePositionedList.builder(
-                  itemCount: _blocks.length,
-                  itemBuilder: (context, index) => _searchBlock(index, palette),
-                  itemScrollController: _scrollController,
-                  itemPositionsListener: _positionsListener,
-                  initialScrollIndex: initialIndex,
-                  initialAlignment: initialAlignment,
-                  padding: EdgeInsets.fromLTRB(
-                    horizontal,
-                    media.padding.top + 16,
-                    horizontal,
-                    media.padding.bottom + 96,
+              // DF-052 CP2: publish the per-query occurrence model and the
+              // revision-scoped locator registry above the list, so only the
+              // on-screen owners depend on it and repaint per query (plan.md
+              // §5.6, §D-1).
+              child: ReaderSearchScope(
+                model: _searchModel,
+                registry: _activeLocatorRegistry ??=
+                    ActiveLocatorRegistry(
+                      _readerRevision ??
+                          DocumentRevision.fromDocument(
+                            id: widget.document.id,
+                            updatedAt: widget.document.updatedAt,
+                            source: widget.document.source,
+                          ),
+                    ),
+                revision: _activeLocatorRegistry!.revision,
+                child: SelectionArea(
+                  child: ScrollablePositionedList.builder(
+                    itemCount: _blocks.length,
+                    // DF-052 CP2: the DF-041 block box is removed; the active
+                    // occurrence's distinct in-content indication and the single
+                    // promoted locator (plan.md §6.2, §D-1) supersede it, so the
+                    // item is the plain built block.
+                    itemBuilder: (context, index) => _blocks[index],
+                    itemScrollController: _scrollController,
+                    itemPositionsListener: _positionsListener,
+                    initialScrollIndex: initialIndex,
+                    initialAlignment: initialAlignment,
+                    padding: EdgeInsets.fromLTRB(
+                      horizontal,
+                      media.padding.top + 16,
+                      horizontal,
+                      media.padding.bottom + 96,
+                    ),
                   ),
                 ),
               ),
@@ -1105,6 +1490,16 @@ class _ReaderScreenState extends State<ReaderScreen>
     }
     return false;
   }
+}
+
+/// A measured reveal decision: the vertical [ScrollPosition] to move, the pixel
+/// [delta] to add to `pixels`, and whether the range is already visible (§D-2).
+class _RangeReveal {
+  const _RangeReveal(this.position, this.delta, this.visible);
+
+  final ScrollPosition position;
+  final double delta;
+  final bool visible;
 }
 
 enum _MenuAction {

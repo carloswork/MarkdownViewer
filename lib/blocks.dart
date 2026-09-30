@@ -4,6 +4,7 @@ import 'package:markdown_widget/markdown_widget.dart';
 
 import 'han_script.dart';
 import 'markdown_theme.dart';
+import 'reader_text_unit.dart';
 
 /// Above this many characters, syntax highlighting is skipped.
 ///
@@ -24,6 +25,7 @@ class CodeBlock extends StatelessWidget {
     required this.palette,
     required this.wrap,
     this.script = kDefaultHanScript,
+    this.ownerId,
   });
 
   final String code;
@@ -39,6 +41,25 @@ class CodeBlock extends StatelessWidget {
   /// and comments inside them (plan.md §7.2).
   final HanScript script;
 
+  /// DF-052 CP2: the structural occurrence owner id, set when this block is
+  /// built through the Reader's capture pass ([reader_text_unit.dart]). When
+  /// present the block reads its per-owner match state from [ReaderSearchScope]
+  /// and paints occurrence overlays across the highlighted token leaves; when
+  /// null (print surface, tests) the block renders exactly as before.
+  final OccurrenceOwnerId? ownerId;
+
+  /// Returns a copy carrying [id]; used by the capture pass so the app-owned
+  /// `PreConfig.builder` widget need not know the id at construction.
+  CodeBlock withOwner(OccurrenceOwnerId id) => CodeBlock(
+    key: key,
+    code: code,
+    language: language,
+    palette: palette,
+    wrap: wrap,
+    script: script,
+    ownerId: id,
+  );
+
   @override
   Widget build(BuildContext context) {
     final trimmed = code.trimRight();
@@ -50,7 +71,23 @@ class CodeBlock extends StatelessWidget {
       fontFamilyFallback: codeFontFallbackFor(script),
     );
 
-    final text = _buildCodeText(trimmed, baseStyle);
+    final id = ownerId;
+    final scope = id == null ? null : ReaderSearchScope.maybeOf(context);
+    final state = id == null ? null : scope?.model.matchStateFor(id);
+    Widget text = _buildCodeText(trimmed, baseStyle, state);
+    // Wrap the drawing code `Text.rich` (never the surrounding Container, whose
+    // language-bar `Text` is a separate RenderParagraph) as one render candidate
+    // when this is the active occurrence (plan.md §D-1). The vertical-axis
+    // reveal skips the wrap-off inner horizontal scroller below.
+    if (id != null && scope != null && state?.active != null) {
+      text = ActiveOccurrenceLocator(
+        ownerId: id,
+        registry: scope.registry,
+        revision: scope.revision,
+        label: scope.model.activeLabel ?? '',
+        child: text,
+      );
+    }
 
     return Container(
       width: double.infinity,
@@ -89,8 +126,23 @@ class CodeBlock extends StatelessWidget {
   /// The catch is deliberate belt-and-braces: an unknown language already falls
   /// back to plaintext inside the highlighter, but no single code block should
   /// ever be able to take down the surrounding document.
-  Widget _buildCodeText(String trimmed, TextStyle baseStyle) {
-    Widget plain() => Text(trimmed, style: baseStyle, softWrap: wrap);
+  Widget _buildCodeText(String trimmed, TextStyle baseStyle, OwnerMatchState? state) {
+    final indication = OccurrenceIndicationStyle.of(palette);
+
+    // Overlays partition the displayed code by cumulative UTF-16 offset, so a
+    // match is painted whether the block is plain or syntax-highlighted, with no
+    // retokenization on query change (plan.md §5.5).
+    Widget draw(InlineSpan root) {
+      if (state == null || state.all.isEmpty) return Text.rich(root, softWrap: wrap);
+      return Text.rich(paintOccurrences(root, state, indication), softWrap: wrap);
+    }
+
+    Widget plain() {
+      if (state == null || state.all.isEmpty) {
+        return Text(trimmed, style: baseStyle, softWrap: wrap);
+      }
+      return draw(TextSpan(text: trimmed, style: baseStyle));
+    }
 
     if (language.isEmpty || trimmed.length > kMaxHighlightChars) {
       return plain();
@@ -104,7 +156,7 @@ class CodeBlock extends StatelessWidget {
         textStyle: baseStyle,
         styleNotMatched: TextStyle(color: palette.text),
       );
-      return Text.rich(TextSpan(children: spans), softWrap: wrap);
+      return draw(TextSpan(children: spans));
     } catch (error) {
       debugPrint('Code highlighting failed for language "$language": $error');
       return plain();
@@ -368,12 +420,30 @@ class RemoteImagePlaceholder extends StatelessWidget {
     required this.alt,
     required this.palette,
     required this.onOpen,
+    this.runOwnerIds,
   });
 
   final String url;
   final String alt;
   final ReaderPalette palette;
   final void Function(String url) onOpen;
+
+  /// DF-052 CP2: one structural occurrence owner id per displayed run, index-
+  /// aligned to [displayedTextLines] (label, status, and — for a remote image —
+  /// URL). Set by the capture pass so each run reads its own per-owner match
+  /// state from [ReaderSearchScope] (decision.md D-004). Null off the Reader path.
+  final List<OccurrenceOwnerId>? runOwnerIds;
+
+  /// Returns a copy carrying the per-run owner [ids]; used by the capture pass.
+  RemoteImagePlaceholder withRunOwners(List<OccurrenceOwnerId> ids) =>
+      RemoteImagePlaceholder(
+        key: key,
+        url: url,
+        alt: alt,
+        palette: palette,
+        onOpen: onOpen,
+        runOwnerIds: ids,
+      );
 
   static bool _isRemoteUrl(String url) =>
       url.startsWith('http://') || url.startsWith('https://');
@@ -402,6 +472,44 @@ class RemoteImagePlaceholder extends StatelessWidget {
       isRemote ? remoteStatus : localStatus,
       if (isRemote) url,
     ];
+  }
+
+  /// Draws run [index]'s displayed text, painting occurrence overlays and — when
+  /// it is the active occurrence — wrapping it as one render candidate exposing
+  /// the single promoted locator (plan.md §D-1, decision.md D-004). Off the Reader
+  /// path (`runOwnerIds == null`) it renders exactly as a plain `Text`.
+  Widget _runText(
+    BuildContext context,
+    int index,
+    String text,
+    TextStyle style, {
+    bool softWrap = false,
+  }) {
+    final ids = runOwnerIds;
+    final id = (ids != null && index < ids.length) ? ids[index] : null;
+    final scope = id == null ? null : ReaderSearchScope.maybeOf(context);
+    final state = id == null ? null : scope?.model.matchStateFor(id);
+    if (state == null || state.all.isEmpty) {
+      return Text(text, style: style, softWrap: softWrap);
+    }
+    Widget painted = Text.rich(
+      paintOccurrences(
+        TextSpan(text: text, style: style),
+        state,
+        OccurrenceIndicationStyle.of(palette),
+      ),
+      softWrap: softWrap,
+    );
+    if (state.active != null && scope != null) {
+      painted = ActiveOccurrenceLocator(
+        ownerId: id!,
+        registry: scope.registry,
+        revision: scope.revision,
+        label: scope.model.activeLabel ?? '',
+        child: painted,
+      );
+    }
+    return painted;
   }
 
   @override
@@ -435,9 +543,11 @@ class RemoteImagePlaceholder extends StatelessWidget {
                   ),
                   const SizedBox(width: 8),
                   Flexible(
-                    child: Text(
+                    child: _runText(
+                      context,
+                      0,
                       label,
-                      style: TextStyle(
+                      TextStyle(
                         fontSize: kBodyFontSize - 2,
                         color: palette.text,
                       ),
@@ -446,9 +556,11 @@ class RemoteImagePlaceholder extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 4),
-              Text(
+              _runText(
+                context,
+                1,
                 status,
-                style: TextStyle(fontSize: 12, color: palette.muted),
+                TextStyle(fontSize: 12, color: palette.muted),
               ),
               if (_isRemote) ...[
                 const SizedBox(height: 2),
@@ -456,14 +568,16 @@ class RemoteImagePlaceholder extends StatelessWidget {
                 // must be presented. It wraps across as many lines as needed
                 // (at the URL's break opportunities) rather than ellipsizing a
                 // hidden suffix, so no searchable literal is concealed.
-                Text(
+                _runText(
+                  context,
+                  2,
                   url,
-                  softWrap: true,
-                  style: TextStyle(
+                  TextStyle(
                     fontFamily: kCodeFont,
                     fontSize: 11,
                     color: palette.link,
                   ),
+                  softWrap: true,
                 ),
               ],
             ],

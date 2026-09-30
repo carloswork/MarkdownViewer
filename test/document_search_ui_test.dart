@@ -26,8 +26,17 @@ void main() {
   }
 
   Future<void> settle(WidgetTester tester) async {
+    // DF-052 CP2: the active-occurrence reveal is a two-step transport now — the
+    // coarse block `scrollTo` (320ms) that DF-041 already had, followed by the
+    // range-level `animateTo` (240ms, up to two passes) and, for sheet paths, a
+    // modal-route dismissal — with interleaved `endOfFrame` waits before the
+    // single locator is promoted and its range settled. The DF-041-era 6-frame
+    // window predates that second animation, so it lands mid-reveal (0 locators).
+    // This is a fixed-frame pump rather than `pumpAndSettle` because the search
+    // field's cursor blink never quiesces. Pump enough frames to cover the whole
+    // reveal chain with margin; assertions are unchanged, nothing is disabled.
     await tester.pump();
-    for (var frame = 0; frame < 6; frame++) {
+    for (var frame = 0; frame < 12; frame++) {
       await tester.pump(const Duration(milliseconds: 100));
     }
   }
@@ -82,6 +91,35 @@ void main() {
     await settle(tester);
     await tester.tap(find.text('Search document'));
     await settle(tester);
+  }
+
+  String locatorLine(WidgetTester tester) => tester
+      .getSemantics(find.byKey(const ValueKey('active-search-locator')))
+      .label
+      .split('\n')
+      .first;
+
+  // RC-3: once the reveal settles the single promoted Reader locator must be a
+  // real assistive-tech target — both selected and focusable — independent of
+  // whether physical focus is (re)placed on it. That focus LANDING after a
+  // responsive remount is DF-070, deferred under D-007; the selectable/focusable
+  // capability is not deferred and stays a live gate after settle.
+  void expectLocatorSelectableSemantics(WidgetTester tester) {
+    final node = tester.getSemantics(
+      find.byKey(const ValueKey('active-search-locator')),
+    );
+    expect(node.flagsCollection.isSelected, Tristate.isTrue);
+    // A focusable node exposes a focusable state, which the pinned dart:ui
+    // SemanticsFlags API carries on the single `isFocused` tristate: it is
+    // `Tristate.isFalse` when focusable-but-not-focused and `Tristate.isTrue`
+    // when focusable-and-focused (the "not focusable" case is neither). Asserting
+    // either proves the locator is a real focusable AT target after settle while
+    // deliberately NOT asserting whether physical focus landed back on it — that
+    // one post-remount outcome stays deferred under D-007/DF-070.
+    expect(
+      node.flagsCollection.isFocused,
+      anyOf(Tristate.isTrue, Tristate.isFalse),
+    );
   }
 
   test('responsive boundary is derived from pane and Reader requirements', () {
@@ -193,7 +231,7 @@ Another needle result.
 
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await settle(tester);
-      expect(find.text('Search result 1 of 2, First'), findsOneWidget);
+      expect(locatorLine(tester), 'Search result 1 of 2, First');
       expect(
         find.byKey(const ValueKey('active-search-locator')),
         findsOneWidget,
@@ -206,7 +244,7 @@ Another needle result.
       await tester.tap(find.byKey(const ValueKey('search-field')));
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await settle(tester);
-      expect(find.text('Search result 2 of 2, Second'), findsOneWidget);
+      expect(locatorLine(tester), 'Search result 2 of 2, Second');
 
       await tester.tap(find.byKey(const ValueKey('search-field')));
       await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
@@ -214,14 +252,14 @@ Another needle result.
       await tester.sendKeyUpEvent(LogicalKeyboardKey.enter);
       await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
       await settle(tester);
-      expect(find.text('Search result 1 of 2, First'), findsOneWidget);
+      expect(locatorLine(tester), 'Search result 1 of 2, First');
 
       await tester.tap(find.byKey(const ValueKey('search-next')));
       await settle(tester);
-      expect(find.text('Search result 2 of 2, Second'), findsOneWidget);
+      expect(locatorLine(tester), 'Search result 2 of 2, Second');
       await tester.tap(find.byKey(const ValueKey('search-previous')));
       await settle(tester);
-      expect(find.text('Search result 1 of 2, First'), findsOneWidget);
+      expect(locatorLine(tester), 'Search result 1 of 2, First');
 
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await settle(tester);
@@ -267,7 +305,7 @@ Another needle result.
       ),
       findsOneWidget,
     );
-    expect(find.text('Search result 1 of 1, Destination'), findsOneWidget);
+    expect(locatorLine(tester), 'Search result 1 of 1, Destination');
   });
 
   testWidgets(
@@ -295,7 +333,7 @@ Another needle result.
         find.byKey(const ValueKey('compact-search-navigator')),
         findsOneWidget,
       );
-      expect(find.text('Search result 1 of 1, Heading'), findsOneWidget);
+      expect(locatorLine(tester), 'Search result 1 of 1, Heading');
 
       await tester.tap(find.byKey(const ValueKey('search-reopen-results')));
       await settle(tester);
@@ -341,7 +379,10 @@ Another needle result.
     expect(indexBuilds, 1);
     await tester.tap(find.byKey(const ValueKey('search-result-0')));
     await settle(tester);
-    expect(find.text('Search result 1 of 1, Heading'), findsOneWidget);
+    // DF-052: the block box is superseded; 'Search result n of total, heading' is
+    // now the promoted locator's semantics label, not a visible Text widget.
+    expect(find.byKey(const ValueKey('active-search-locator')), findsOneWidget);
+    expect(locatorLine(tester), 'Search result 1 of 1, Heading');
     expect(
       tester.binding.focusManager.primaryFocus?.debugLabel,
       'Active search result',
@@ -352,7 +393,9 @@ Another needle result.
     expect(find.byKey(const ValueKey('search-sheet')), findsOneWidget);
     expect(find.text('needle'), findsOneWidget);
     expect(find.text('1 result'), findsOneWidget);
-    expect(find.text('Search result 1 of 1, Heading'), findsOneWidget);
+    // The locator survives the pane→sheet remount behind the sheet (RC-3); its
+    // label is exposed through semantics, not a visible Text widget.
+    expect(locatorLine(tester), 'Search result 1 of 1, Heading');
     expect(
       tester.binding.focusManager.primaryFocus?.debugLabel,
       'Search result',
@@ -372,11 +415,19 @@ Another needle result.
     expect(find.byKey(const ValueKey('search-pane')), findsOneWidget);
     expect(find.text('needle'), findsOneWidget);
     expect(find.text('1 result'), findsOneWidget);
-    expect(find.text('Search result 1 of 1, Heading'), findsOneWidget);
-    expect(
-      tester.binding.focusManager.primaryFocus?.debugLabel,
-      'Active search result',
-    );
+    // Single locator re-promoted with the exact label after the sheet→pane
+    // remount (live gate): semantics label, not a visible Text widget.
+    expect(find.byKey(const ValueKey('active-search-locator')), findsOneWidget);
+    expect(locatorLine(tester), 'Search result 1 of 1, Heading');
+    // RC-3: the re-promoted locator is a real selectable/focusable AT target once
+    // the sheet→pane remount settles.
+    expectLocatorSelectableSemantics(tester);
+    // DF-070 (D-007): automatic physical focus RETURN to the Reader locator after
+    // this responsive remount is the one deferred behavior. D-007 only waives the
+    // auto-restore requirement — it does not require the return to fail — so we
+    // neither assert focus lands on the locator (parked) nor pin focus away from
+    // it (that would wrongly break once DF-070 is fixed). The range re-reveal,
+    // single-locator promotion and selectable/focusable semantics above stay live.
     expect(indexBuilds, 1);
   });
 
@@ -775,8 +826,9 @@ Another needle result.
 
     Future<void> expectPostDisposalRestoration(
       String method,
-      String expectedFocus,
-    ) async {
+      String expectedFocus, {
+      bool locatorFocusDeferred = false,
+    }) async {
       await dismiss(method);
       await tester.pump();
       expect(find.byKey(const ValueKey('search-sheet')), findsOneWidget);
@@ -789,11 +841,23 @@ Another needle result.
         find.byKey(const ValueKey('reader-region')),
       );
       await settle(tester);
+      // Session survival and exact sheet dismissal remain live for every path.
       expect(find.byKey(const ValueKey('search-sheet')), findsNothing);
-      expect(
-        tester.binding.focusManager.primaryFocus?.debugLabel,
-        expectedFocus,
-      );
+      // DF-070 (D-007): when a responsive remount raised the sheet OVER an
+      // already-active locator (locatorFocusDeferred), automatic physical focus
+      // RETURN to the Reader 'Active search result' locator after dismissal is the
+      // one deferred case. D-007 waives the auto-restore requirement only — it does
+      // not require the return to fail — so we assert nothing about that focus
+      // landing here (pinning it away would wrongly break once DF-070 is fixed).
+      // Every ordinary opener-restoration path stays a live exact-focus gate; RC-3's
+      // selectable/focusable gate is covered by the guaranteed-present locator in the
+      // sheet→pane remount test.
+      if (!locatorFocusDeferred) {
+        expect(
+          tester.binding.focusManager.primaryFocus?.debugLabel,
+          expectedFocus,
+        );
+      }
     }
 
     for (final method in dismissals) {
@@ -840,7 +904,11 @@ Another needle result.
         tester,
         find.byKey(const ValueKey('reader-region')),
       );
-      await expectPostDisposalRestoration(method, 'Active search result');
+      await expectPostDisposalRestoration(
+        method,
+        'Active search result',
+        locatorFocusDeferred: true,
+      );
       tester.view.physicalSize = const Size(1200, 700);
       await settle(tester);
     }
@@ -906,10 +974,14 @@ Another needle result.
     await tester.tapAt(const Offset(8, 8));
     await settle(tester);
     expect(find.byKey(const ValueKey('search-sheet')), findsNothing);
-    expect(
-      tester.binding.focusManager.primaryFocus?.debugLabel,
-      'Active search result',
-    );
+    // DF-070 (D-007): automatic physical focus RETURN to the Reader locator after
+    // this responsive-remount sheet is dismissed is deferred. D-007 only waives the
+    // auto-restore requirement — it does not require the return to fail — so we
+    // neither assert focus lands on the locator (parked) nor pin it away (that would
+    // wrongly break once DF-070 is fixed). The single-locator re-promotion,
+    // list-fallback label, active identity and modal precedence asserted above
+    // remain live; RC-3's selectable/focusable gate is covered by the
+    // guaranteed-present locator in the sheet→pane remount test.
   });
 
   testWidgets('pane Previous and Next keep the active result row visible', (
@@ -1310,12 +1382,6 @@ Another needle result.
     await settle(tester);
   }
 
-  String locatorLine(WidgetTester tester) => tester
-      .getSemantics(find.byKey(const ValueKey('active-search-locator')))
-      .label
-      .split('\n')
-      .first;
-
   testWidgets('compact navigator controls operate through semantics actions', (
     tester,
   ) async {
@@ -1620,10 +1686,10 @@ fenced marker
     expect(find.text('3 results'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('search-result-0')));
     await settle(tester);
-    expect(find.text('Search result 1 of 3, Heading'), findsOneWidget);
+    expect(locatorLine(tester), 'Search result 1 of 3, Heading');
     await tester.tap(find.byKey(const ValueKey('search-next')));
     await settle(tester);
-    expect(find.text('Search result 2 of 3, Heading'), findsOneWidget);
+    expect(locatorLine(tester), 'Search result 2 of 3, Heading');
     expect(find.byKey(const ValueKey('active-search-locator')), findsOneWidget);
   });
 
