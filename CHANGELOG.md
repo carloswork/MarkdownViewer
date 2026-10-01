@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Search now highlights every match in the rendered document and makes the selected result distinct. Navigating results brings the exact selected match into view. Search also follows text displayed by the Reader, including remote-image placeholder text.
+
 ## v1.4.0 — 2026-09-27
 
 - Added the running app version beneath Settings on the main screen.
