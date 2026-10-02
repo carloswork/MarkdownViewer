@@ -446,11 +446,9 @@ class _RevealSearch {
   final double upper;
 }
 
-/// Virtualized results list that keeps the active row in view when the active
-/// result changes while the list is mounted, scrolling only as far as needed.
-///
-/// A freshly mounted list keeps its initial offset, so a transition-created
-/// modal still exercises the accepted results-list focus fallback.
+/// Virtualized results list that reveals the active row after a fresh mount
+/// and on mounted index changes, scrolling only as far as needed.
+/// Reveal is list-local and does not request or restore keyboard focus.
 class _SearchResultList extends StatefulWidget {
   const _SearchResultList({
     required this.itemCount,
@@ -482,11 +480,25 @@ class _SearchResultListState extends State<_SearchResultList> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    _requestReveal();
+  }
+
+  @override
   void didUpdateWidget(_SearchResultList oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.activeIndex != oldWidget.activeIndex ||
+        widget.itemCount != oldWidget.itemCount) {
+      _requestReveal();
+    }
+  }
+
+  void _requestReveal() {
+    final generation = ++_revealGeneration;
     final active = widget.activeIndex;
-    if (active == null || active == oldWidget.activeIndex) return;
-    _scheduleReveal(active, ++_revealGeneration, 0, null);
+    if (active == null || active < 0 || active >= widget.itemCount) return;
+    _scheduleReveal(active, generation, 0, null);
   }
 
   void _scheduleReveal(
@@ -498,6 +510,8 @@ class _SearchResultListState extends State<_SearchResultList> {
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => _reveal(index, generation, attempt, search),
     );
+    // A readiness retry may run after layout without a scroll-induced frame.
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   /// The sliver holding this list's rows, found through any registered row.
@@ -525,8 +539,17 @@ class _SearchResultListState extends State<_SearchResultList> {
     if (!mounted ||
         generation != _revealGeneration ||
         widget.activeIndex != index ||
-        !_controller.hasClients ||
+        index < 0 ||
         index >= widget.itemCount) {
+      return;
+    }
+    if (!_controller.hasClients ||
+        !_controller.position.hasContentDimensions ||
+        !_controller.position.hasViewportDimension ||
+        _controller.position.viewportDimension <= 0) {
+      if (attempt < _maxRevealAttempts) {
+        _scheduleReveal(index, generation, attempt + 1, search);
+      }
       return;
     }
     final position = _controller.position;
@@ -564,7 +587,10 @@ class _SearchResultListState extends State<_SearchResultList> {
     // earlier layouts proved, and jump so each attempt either lays the row out
     // or narrows those bounds.
     final sliver = _rowSliver();
-    if (sliver == null) return;
+    if (sliver == null) {
+      _scheduleReveal(index, generation, attempt + 1, search);
+      return;
+    }
     final rangeViewport = RenderAbstractViewport.of(sliver);
     final first = sliver.firstChild!;
     final last = sliver.lastChild!;

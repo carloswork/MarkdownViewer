@@ -59,6 +59,37 @@ void main() {
     expect(find.ancestor(of: focused, matching: ancestor), findsNothing);
   }
 
+  void expectResultRowRevealed(WidgetTester tester, int index) {
+    final bounds = tester.getRect(find.byKey(ValueKey('search-result-$index')));
+    final viewport = tester.getRect(
+      find.byKey(const ValueKey('search-result-list')),
+    );
+    expect(bounds.top, greaterThanOrEqualTo(viewport.top - 1));
+    expect(bounds.bottom, lessThanOrEqualTo(viewport.bottom + 1));
+    expect(bounds.left, greaterThanOrEqualTo(viewport.left - 1));
+    expect(bounds.right, lessThanOrEqualTo(viewport.right + 1));
+    expect(
+      tester
+          .widget<ListTile>(find.byKey(ValueKey('search-result-$index')))
+          .selected,
+      isTrue,
+    );
+  }
+
+  void expectMappedResultFocus(WidgetTester tester) {
+    final surface = tester.widget<SearchSurface>(find.byType(SearchSurface));
+    // Mapping runs at its existing attachment point. A list fallback stays
+    // focused if its then-unattached row becomes visible later; no second pass.
+    if (surface.resultListFocusNode.hasPrimaryFocus) {
+      expect(
+        tester.binding.focusManager.primaryFocus,
+        surface.resultListFocusNode,
+      );
+    } else {
+      expect(tester.binding.focusManager.primaryFocus, surface.resultFocusNode);
+    }
+  }
+
   Future<void> reverseTab(WidgetTester tester) async {
     await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
     await tester.sendKeyEvent(LogicalKeyboardKey.tab);
@@ -727,74 +758,75 @@ Another needle result.
     }
   });
 
-  testWidgets('pane controls use the virtualized modal-list fallback', (
-    tester,
-  ) async {
-    useViewport(tester, const Size(1200, 500));
-    final body = List.filled(30, 'needle').join(' ');
-    await tester.pumpWidget(reader(MarkdownDocument.fromSource(body)));
-    await settle(tester);
-    await openFromMenu(tester);
-    await tester.enterText(
-      find.byKey(const ValueKey('search-field')),
-      'needle',
-    );
-    await tester.pump(const Duration(milliseconds: 151));
-    await tester.pump();
+  testWidgets(
+    'pane controls reveal selected modal row and preserve mapped focus',
+    (tester) async {
+      useViewport(tester, const Size(1200, 500));
+      final body = List.filled(30, 'needle').join(' ');
+      await tester.pumpWidget(reader(MarkdownDocument.fromSource(body)));
+      await settle(tester);
+      await openFromMenu(tester);
+      await tester.enterText(
+        find.byKey(const ValueKey('search-field')),
+        'needle',
+      );
+      await tester.pump(const Duration(milliseconds: 151));
+      await tester.pump();
 
-    final list = find.byKey(const ValueKey('search-result-list'));
-    for (var drag = 0; drag < 8; drag++) {
-      if (find
-          .byKey(const ValueKey('search-result-20'))
-          .evaluate()
-          .isNotEmpty) {
-        break;
+      final list = find.byKey(const ValueKey('search-result-list'));
+      for (var drag = 0; drag < 8; drag++) {
+        if (find
+            .byKey(const ValueKey('search-result-20'))
+            .evaluate()
+            .isNotEmpty) {
+          break;
+        }
+        await tester.drag(list, const Offset(0, -350));
+        await tester.pump();
       }
-      await tester.drag(list, const Offset(0, -350));
-      await tester.pump();
-    }
-    await tester.tap(find.byKey(const ValueKey('search-result-20')));
-    await settle(tester);
+      await tester.tap(find.byKey(const ValueKey('search-result-20')));
+      await settle(tester);
 
-    for (final control in const [
-      ('search-previous', 'Previous result', 'compact-search-previous'),
-      ('search-next', 'Next result', 'compact-search-next'),
-    ]) {
-      tester
-          .widget<IconButton>(find.byKey(ValueKey(control.$1)))
-          .focusNode!
-          .requestFocus();
-      await tester.pump();
-      tester.view.physicalSize = const Size(1080, 500);
-      await settle(tester);
-      expect(find.byKey(const ValueKey('search-result-20')), findsNothing);
-      expect(
-        tester.binding.focusManager.primaryFocus?.debugLabel,
-        'Search results',
-      );
-      expectPrimaryFocusInside(
-        tester,
-        find.byKey(const ValueKey('search-sheet')),
-      );
-      expectPrimaryFocusOutside(
-        tester,
-        find.byKey(const ValueKey('reader-region')),
-      );
+      for (final control in const [
+        ('search-previous', 'Previous result', 'compact-search-previous'),
+        ('search-next', 'Next result', 'compact-search-next'),
+      ]) {
+        tester
+            .widget<IconButton>(find.byKey(ValueKey(control.$1)))
+            .focusNode!
+            .requestFocus();
+        await tester.pump();
+        tester.view.physicalSize = const Size(1080, 500);
+        await settle(tester);
+        expectResultRowRevealed(tester, 20);
+        expectMappedResultFocus(tester);
+        expectPrimaryFocusInside(
+          tester,
+          find.byKey(const ValueKey('search-sheet')),
+        );
+        expectPrimaryFocusOutside(
+          tester,
+          find.byKey(const ValueKey('reader-region')),
+        );
 
-      await tester.tap(find.byKey(const ValueKey('search-close')));
-      await tester.pump();
-      expect(find.byKey(const ValueKey('search-sheet')), findsOneWidget);
-      expect(
-        tester.binding.focusManager.primaryFocus?.debugLabel,
-        isNot(control.$2),
-      );
-      await settle(tester);
-      expect(tester.binding.focusManager.primaryFocus?.debugLabel, control.$2);
-      expectPrimaryFocusInside(tester, find.byKey(ValueKey(control.$3)));
-      tester.view.physicalSize = const Size(1200, 500);
-      await settle(tester);
-    }
-  });
+        await tester.tap(find.byKey(const ValueKey('search-close')));
+        await tester.pump();
+        expect(find.byKey(const ValueKey('search-sheet')), findsOneWidget);
+        expect(
+          tester.binding.focusManager.primaryFocus?.debugLabel,
+          isNot(control.$2),
+        );
+        await settle(tester);
+        expect(
+          tester.binding.focusManager.primaryFocus?.debugLabel,
+          control.$2,
+        );
+        expectPrimaryFocusInside(tester, find.byKey(ValueKey(control.$3)));
+        tester.view.physicalSize = const Size(1200, 500);
+        await settle(tester);
+      }
+    },
+  );
 
   testWidgets('all sheet dismissal paths restore each exact opener', (
     tester,
@@ -914,7 +946,7 @@ Another needle result.
     }
   });
 
-  testWidgets('transition modal uses list fallback then restores locator', (
+  testWidgets('transition modal reveals selected row with conditional focus', (
     tester,
   ) async {
     useViewport(tester, const Size(1200, 500));
@@ -951,11 +983,8 @@ Another needle result.
     tester.view.physicalSize = const Size(1080, 500);
     await settle(tester);
     expect(find.byKey(const ValueKey('search-sheet')), findsOneWidget);
-    expect(find.byKey(const ValueKey('search-result-20')), findsNothing);
-    expect(
-      tester.binding.focusManager.primaryFocus?.debugLabel,
-      'Search results',
-    );
+    expectResultRowRevealed(tester, 20);
+    expectMappedResultFocus(tester);
     expectPrimaryFocusInside(
       tester,
       find.byKey(const ValueKey('search-sheet')),
@@ -979,10 +1008,341 @@ Another needle result.
     // auto-restore requirement — it does not require the return to fail — so we
     // neither assert focus lands on the locator (parked) nor pin it away (that would
     // wrongly break once DF-070 is fixed). The single-locator re-promotion,
-    // list-fallback label, active identity and modal precedence asserted above
+    // list label, active identity and modal precedence asserted above
     // remain live; RC-3's selectable/focusable gate is covered by the
     // guaranteed-present locator in the sheet→pane remount test.
   });
+
+  // R2: initial rows have one snippet line; later rows have two. The first
+  // measured estimate undershoots a middle target, so it is still unattached at
+  // the Reader's existing second post-frame result-role mapping point.
+  Future<SearchSurface> prepareR2PendingReader(WidgetTester tester) async {
+    useViewport(tester, const Size(1200, 500));
+    final body = List.generate(
+      800,
+      (i) => '## Item ${i + 1}\n\nneedle${i < 40 ? '' : ' context' * 35}.',
+    ).join('\n\n').replaceAll(r'\n', '\n');
+    await tester.pumpWidget(reader(MarkdownDocument.fromSource(body)));
+    await settle(tester);
+    await openFromMenu(tester);
+    await tester.enterText(
+      find.byKey(const ValueKey('search-field')),
+      'needle',
+    );
+    await tester.pump(const Duration(milliseconds: 151));
+    await settle(tester);
+    var surface = tester.widget<SearchSurface>(find.byType(SearchSurface));
+    expect(surface.result!.total, 800);
+    // Exercise the real Reader activation callback without making hundreds of
+    // unrelated list drags part of the scheduler test.
+    surface.onSelect(400);
+    // Cross before this active row has ever attached in the outgoing pane.
+    // A previously attached FocusNode can retain a defunct context; that is
+    // not the actual null-context mapping branch required by this proof.
+    surface.previousFocusNode.requestFocus();
+    tester.binding.focusManager.applyFocusChangesIfNeeded();
+    expect(tester.binding.focusManager.primaryFocus, surface.previousFocusNode);
+    tester.view.physicalSize = const Size(1080, 500);
+    await tester.pump(); // Reader schedules/opens the route after layout.
+    await tester.pump(); // Fresh sheet lays out and schedules its continuation.
+    final sheet = tester.widget<SearchSurface>(
+      find.byWidgetPredicate(
+        (w) => w is SearchSurface && w.mode == SearchSurfaceMode.sheet,
+      ),
+    );
+    expect(sheet.activeMatchIndex, 400);
+    expect(identical(sheet.result, surface.result), isTrue);
+    expect(sheet.resultFocusNode.context, isNull);
+    expect(find.byKey(const ValueKey('search-result-400')), findsNothing);
+    return sheet;
+  }
+
+  ScrollPosition r2Position(WidgetTester tester, Finder surface) => tester
+      .state<ScrollableState>(
+        find.descendant(
+          of: find.descendant(
+            of: surface,
+            matching: find.byKey(const ValueKey('search-result-list')),
+          ),
+          matching: find.byType(Scrollable),
+        ),
+      )
+      .position;
+
+  Future<int> completeR2Row(WidgetTester tester, Finder surface) async {
+    final row = find.descendant(
+      of: surface,
+      matching: find.byKey(const ValueKey('search-result-400')),
+    );
+    final list = find.descendant(
+      of: surface,
+      matching: find.byKey(const ValueKey('search-result-list')),
+    );
+    for (var frame = 0; frame < 68; frame++) {
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(tester.takeException(), isNull);
+      if (row.evaluate().isEmpty) continue;
+      final r = tester.getRect(row), v = tester.getRect(list);
+      if (r.top >= v.top - 1 &&
+          r.bottom <= v.bottom + 1 &&
+          r.left >= v.left - 1 &&
+          r.right <= v.right + 1) {
+        expect(tester.widget<ListTile>(row).selected, isTrue);
+        return frame + 1;
+      }
+    }
+    fail('Current R2 target did not reveal within 68 layout frames');
+  }
+
+  testWidgets('R2 Reader maps an unattached result to list at mapping time', (
+    tester,
+  ) async {
+    final sheet = await prepareR2PendingReader(tester);
+    // Supply the wrong focus target first. A manual list request would merely
+    // choose the expected answer instead of proving the Reader mapper runs.
+    sheet.fieldFocusNode.requestFocus();
+    tester.binding.focusManager.applyFocusChangesIfNeeded();
+    expect(tester.binding.focusManager.primaryFocus, sheet.fieldFocusNode);
+    bool? attachedAtMapping;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // Same layout as the already queued actual Reader mapping callback;
+      // later deferred reveal may jump, but cannot attach a row until layout.
+      attachedAtMapping = sheet.resultFocusNode.context != null;
+    });
+    await tester.pump();
+    expect(attachedAtMapping, isFalse);
+    expect(tester.binding.focusManager.primaryFocus, sheet.resultListFocusNode);
+    final modal = find.byKey(const ValueKey('search-sheet'));
+    expectPrimaryFocusInside(tester, modal);
+    expectPrimaryFocusOutside(
+      tester,
+      find.byKey(const ValueKey('reader-region')),
+    );
+    expect(
+      find.byKey(const ValueKey('compact-search-navigator')),
+      findsNothing,
+    );
+    expect(sheet.activeMatchIndex, 400);
+    expect(sheet.controller.text, 'needle');
+    expect(
+      tester
+          .getSemantics(find.byKey(const ValueKey('search-result-list')))
+          .label,
+      'Search results. Result 401 of 800 selected',
+    );
+    final frames = await completeR2Row(tester, modal);
+    expect(frames, lessThanOrEqualTo(68));
+    debugPrint(
+      'DF072-R2 mapping attached=$attachedAtMapping primary=list '
+      'active=401/800 revealFrames=$frames',
+    );
+    await settle(tester);
+    expect(sheet.resultFocusNode.context, isNotNull);
+    expect(tester.binding.focusManager.primaryFocus, sheet.resultListFocusNode);
+    final position = r2Position(tester, modal),
+        offset = r2Position(tester, modal).pixels;
+    for (var frame = 0; frame < 8; frame++) {
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(position.pixels, closeTo(offset, 0.01));
+      expect(
+        tester.binding.focusManager.primaryFocus,
+        sheet.resultListFocusNode,
+      );
+      expect(tester.takeException(), isNull);
+      expect(tester.binding.hasScheduledFrame, isFalse);
+    }
+  });
+
+  testWidgets('R2 responsive cross-back cancels a pending sheet reveal', (
+    tester,
+  ) async {
+    final outgoing = await prepareR2PendingReader(tester);
+    final modal = find.byKey(const ValueKey('search-sheet'));
+    final outgoingPosition = r2Position(tester, modal);
+    final before = outgoingPosition.pixels;
+    expect(before, greaterThan(0), reason: 'first estimate already jumped');
+    expect(
+      outgoing.resultFocusNode.context,
+      isNull,
+      reason: 'cross back before target attaches/completes',
+    );
+    // Cross back with the list continuation and mapping callback still queued.
+    tester.view.physicalSize = const Size(1200, 500);
+    await tester.pump();
+    final pane = find.byKey(const ValueKey('search-pane'));
+    expect(pane, findsOneWidget);
+    final current = tester.widget<SearchSurface>(
+      find.ancestor(of: pane, matching: find.byType(SearchSurface)),
+    );
+    expect(current.activeMatchIndex, 400);
+    expect(identical(current.result, outgoing.result), isTrue);
+    expect(identical(r2Position(tester, pane), outgoingPosition), isFalse);
+    final frames = await completeR2Row(tester, pane);
+    await settle(tester);
+    expect(modal, findsNothing);
+    expect(tester.takeException(), isNull);
+    expect(current.controller.text, 'needle');
+    expect(locatorLine(tester), 'Search result 401 of 800, Item 401');
+    expect(tester.binding.focusManager.primaryFocus, current.previousFocusNode);
+    expectPrimaryFocusInside(tester, pane);
+    debugPrint(
+      'DF072-R2 crossBack pendingContext=null outgoingOffset=$before '
+      'current=401/800 revealFrames=$frames restored=previous',
+    );
+    final position = r2Position(tester, pane),
+        offset = r2Position(tester, pane).pixels;
+    for (var frame = 0; frame < 8; frame++) {
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(position.pixels, closeTo(offset, 0.01));
+      expect(tester.takeException(), isNull);
+      expect(
+        tester.binding.focusManager.primaryFocus,
+        current.previousFocusNode,
+      );
+      expect(tester.binding.hasScheduledFrame, isFalse);
+    }
+  });
+
+  testWidgets(
+    'distant sheet reopen retains session across selection steps wraps and remounts',
+    (tester) async {
+      useViewport(tester, const Size(800, 800));
+      final body = List.generate(
+        100,
+        (i) =>
+            '## Item ${i + 1}\n\nneedle entry ${i + 1}. ${'context ' * (i % 3 == 0 ? 1 : 30)}',
+      ).join('\n\n').replaceAll(r'\n', '\n');
+      await tester.pumpWidget(reader(MarkdownDocument.fromSource(body)));
+      await settle(tester);
+      await openFromMenu(tester);
+      await tester.enterText(
+        find.byKey(const ValueKey('search-field')),
+        'needle',
+      );
+      await tester.pump(const Duration(milliseconds: 151));
+      await settle(tester);
+      final list = find.byKey(const ValueKey('search-result-list'));
+      final scrollable = find.descendant(
+        of: list,
+        matching: find.byType(Scrollable),
+      );
+      final result = tester
+          .widget<SearchSurface>(find.byType(SearchSurface))
+          .result!;
+      expect(result.total, 100);
+      final identities = result.matches
+          .map(
+            (m) => (m.ownerId, m.documentRevision, m.start, m.end, m.ordinal),
+          )
+          .toList();
+
+      void retained(int index) {
+        expectResultRowRevealed(tester, index);
+        final surface = tester.widget<SearchSurface>(
+          find.byType(SearchSurface),
+        );
+        expect(surface.controller.text, 'needle');
+        expect(identical(surface.result, result), isTrue);
+        expect(
+          surface.result!.matches
+              .map(
+                (m) =>
+                    (m.ownerId, m.documentRevision, m.start, m.end, m.ordinal),
+              )
+              .toList(),
+          identities,
+        );
+        expect(surface.activeMatchIndex, index);
+        if (find.byKey(const ValueKey('search-sheet')).evaluate().isEmpty) {
+          expect(
+            locatorLine(tester),
+            'Search result ${index + 1} of 100, Item ${index + 1}',
+          );
+        }
+      }
+
+      Future<void> select(int index) async {
+        final row = find.byKey(ValueKey('search-result-$index'));
+        final active =
+            tester
+                .widget<SearchSurface>(find.byType(SearchSurface))
+                .activeMatchIndex ??
+            0;
+        await tester.scrollUntilVisible(
+          row,
+          index < active ? -500 : 500,
+          scrollable: scrollable,
+        );
+        await tester.ensureVisible(row);
+        await tester.pump();
+        await tester.tap(row);
+        await settle(tester);
+        expect(find.byKey(const ValueKey('search-sheet')), findsNothing);
+        expect(
+          locatorLine(tester),
+          'Search result ${index + 1} of 100, Item ${index + 1}',
+        );
+      }
+
+      Future<void> reopen(int index) async {
+        await tester.tap(find.byKey(const ValueKey('search-reopen-results')));
+        await settle(tester);
+        retained(index);
+      }
+
+      Future<void> dismiss() async {
+        await tester.tap(find.byKey(const ValueKey('search-close')));
+        await settle(tester);
+      }
+
+      for (final index in [1, 11, 99]) {
+        await select(index);
+        await reopen(index);
+        await dismiss();
+        await reopen(index);
+      }
+      await select(99); // Same visible active selection needs no index change.
+      await reopen(99);
+      await dismiss();
+      await tester.tap(find.byKey(const ValueKey('compact-search-previous')));
+      await settle(tester);
+      await reopen(98);
+      await select(0);
+      await tester.tap(find.byKey(const ValueKey('compact-search-previous')));
+      await settle(tester);
+      await reopen(99);
+      await dismiss();
+      await tester.tap(find.byKey(const ValueKey('compact-search-next')));
+      await settle(tester);
+      await reopen(0);
+      await select(99);
+      await reopen(99);
+      for (var crossing = 0; crossing < 3; crossing++) {
+        tester.view.physicalSize = const Size(1280, 800);
+        await settle(tester);
+        expect(find.byKey(const ValueKey('search-sheet')), findsNothing);
+        retained(99);
+        tester.view.physicalSize = const Size(800, 800);
+        await settle(tester);
+        retained(99);
+      }
+      await dismiss();
+      await tester.tap(find.byKey(const ValueKey('compact-search-close')));
+      await settle(tester);
+      expect(find.byKey(const ValueKey('active-search-locator')), findsNothing);
+      expect(find.byKey(const ValueKey('search-reopen-results')), findsNothing);
+      await openFromMenu(tester);
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const ValueKey('search-field')))
+            .controller!
+            .text,
+        '',
+      );
+      expect(list, findsNothing);
+      expect(find.text('Enter a search term'), findsOneWidget);
+    },
+  );
 
   testWidgets('pane Previous and Next keep the active result row visible', (
     tester,
@@ -1980,9 +2340,8 @@ fenced marker
     }) async {
       await tester.pumpWidget(
         _ScriptHost(
-          document: MarkdownDocument.fromSource(
-            source,
-          ).copyWith(scriptPreference: preference),
+          document: MarkdownDocument.fromSource(source)
+              .copyWith(scriptPreference: preference),
         ),
       );
       await settle(tester);
@@ -2268,9 +2627,8 @@ class _ResultListProbe {
   }
 
   int get activeIndex {
-    final match = RegExp(
-      r'Result (\d+) of \d+ selected',
-    ).firstMatch(tester.getSemantics(list).label);
+    final match = RegExp(r'Result (\d+) of \d+ selected')
+        .firstMatch(tester.getSemantics(list).label);
     return int.parse(match!.group(1)!) - 1;
   }
 
