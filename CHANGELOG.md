@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.5.1 — 2026-10-02
+## v1.5.1 — 2026-10-03
 
 - Search results now reopen at the currently selected match, including distant results.
 
