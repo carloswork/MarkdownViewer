@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.5.2 — 2026-10-04
+
+- Text selection is now visible inside inline code in the Reader.
+
 ## v1.5.1 — 2026-10-03
 
 - Search results now reopen at the currently selected match, including distant results.
