@@ -334,7 +334,7 @@ MarkdownConfig buildMarkdownConfig({
           color: palette.isDark
               ? const Color(0xFFE6C07B)
               : const Color(0xFFB3261E),
-          backgroundColor: palette.codeBackground,
+          backgroundColor: palette.codeBackground.withValues(alpha: 0.50),
           fontFamilyFallback: codeFallback,
         ),
       ),
