@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.6.0 — 2026-10-11
 
 - Added Windows desktop loading by dropping one local Markdown file anywhere on the main screen, with temporary feedback and the existing replacement confirmation. Load from file remains available.
 
