@@ -22,6 +22,45 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
   }
 
+  for (final action in ['Edit local copy', 'Load from file']) {
+    testWidgets('$action begins intake only after the menu has closed', (
+      tester,
+    ) async {
+      tester.view.physicalSize = const Size(1100, 1600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      bool? menuMountedAtEntry;
+      void enter() => menuMountedAtEntry = find
+          .text('Return to main')
+          .evaluate()
+          .isNotEmpty;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ReaderScreen(
+            document: MarkdownDocument.fromSource('# Report\n\nBody.'),
+            settings: const Settings(),
+            onSettingsChanged: (_) {},
+            onScriptPreferenceChanged: (_) {},
+            onEdit: action == 'Edit local copy' ? enter : () {},
+            onLoadFile: action == 'Load from file' ? enter : () {},
+            onReturnHome: () {},
+            onPositionChanged: (_) {},
+          ),
+        ),
+      );
+      await settle(tester);
+      await tester.tap(find.byIcon(Icons.more_horiz_rounded));
+      await settle(tester);
+      await tester.tap(find.text(action));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(menuMountedAtEntry, isNull);
+      await settle(tester);
+      await settle(tester);
+      expect(menuMountedAtEntry, isFalse);
+    });
+  }
+
   testWidgets('Return to main leaves only after the menu has closed', (
     tester,
   ) async {

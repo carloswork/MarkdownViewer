@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Added Windows desktop loading by dropping one local Markdown file anywhere on the main screen, with temporary feedback and the existing replacement confirmation. Load from file remains available.
+
 ## v1.5.2 — 2026-10-04
 
 - Text selection is now visible inside inline code in the Reader.

@@ -668,6 +668,8 @@ void main() {
       await tester.ensureVisible(find.text('Edit local copy'));
       await tester.tap(find.text('Edit local copy'));
       await settle(tester);
+      // Edit begins after the popup has detached and its closing frame completes.
+      await settle(tester);
       await tester.enterText(find.byType(TextField), '# Edited\n\nMore.');
       await settle(tester);
       await tester.tap(find.widgetWithText(TextButton, 'Save'));
@@ -1904,6 +1906,8 @@ Future<void> editDocumentTo(WidgetTester tester, String source) async {
   await settle(tester);
   await tester.ensureVisible(find.text('Edit local copy'));
   await tester.tap(find.text('Edit local copy'));
+  await settle(tester);
+  // Edit begins after the popup has detached and its closing frame completes.
   await settle(tester);
   await tester.enterText(find.byType(TextField), source);
   await settle(tester);

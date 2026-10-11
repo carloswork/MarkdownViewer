@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'file_loader.dart';
+import 'file_drop.dart';
 import 'han_script.dart';
 import 'home_screen.dart';
 import 'markdown_theme.dart';
@@ -46,6 +47,7 @@ class MarkdownViewerApp extends StatefulWidget {
     required this.initialSettings,
     required this.initialDocument,
     required this.startup,
+    this.fileDropMount = mountFileDrop,
   });
 
   final Settings initialSettings;
@@ -53,6 +55,9 @@ class MarkdownViewerApp extends StatefulWidget {
 
   /// What startup resolved about retention, before the first frame.
   final StartupResolution startup;
+
+  /// Dependency seam for deterministic native-independent intake tests.
+  final FileDropMount fileDropMount;
 
   @override
   State<MarkdownViewerApp> createState() => _MarkdownViewerAppState();
@@ -108,6 +113,108 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   /// It shows at once and is stored when the operation finishes, so it cannot
   /// race the preference write that operation makes (D-013).
   bool _settingsWriteDeferred = false;
+
+  final _navigatorKey = GlobalKey<NavigatorState>();
+  late final _routeObserver = _EntryRouteObserver(_modalRouteChanged);
+  late final FileDropLease _dropLease;
+  _IntakeOperation? _intake;
+  int _documentGeneration = 0;
+  int _routeGeneration = 0;
+  bool _ownedIntakeModal = false;
+  bool _dropHover = false;
+  bool _disposing = false;
+
+  bool get _homeRendered => _atHome || _document == null || _inRecovery;
+  bool get _dropEligible =>
+      mounted &&
+      !_disposing &&
+      _homeRendered &&
+      !_atSettings &&
+      !_busy &&
+      _intake == null &&
+      !(_navigatorKey.currentState?.canPop() ?? true);
+
+  @override
+  void initState() {
+    super.initState();
+    _dropLease = widget.fileDropMount(
+      eligible: () => _dropEligible,
+      onHover: (value) => _setDropHover(value && _dropEligible),
+      onCandidate: (candidate) {
+        final context = _navigatorKey.currentContext;
+        if (context != null && _dropEligible) {
+          unawaited(_acquireFile(context, candidate.read, dropped: true));
+        }
+      },
+      onRejected: _report,
+    );
+  }
+
+  @override
+  void dispose() {
+    _disposing = true;
+    _dropLease.dispose();
+    _intake = null;
+    super.dispose();
+  }
+
+  void _setDropHover(bool value) {
+    if (!mounted || _disposing || value == _dropHover) return;
+    setState(() => _dropHover = value);
+  }
+
+  void _modalRouteChanged() {
+    if (_ownedIntakeModal) return;
+    _routeGeneration++;
+    _setDropHover(false);
+  }
+
+  _IntakeOperation? _beginIntake() {
+    if (_navigatorKey.currentState?.canPop() ?? true) return null;
+    if (_busy || _intake != null) {
+      _report('Finish the current operation first.');
+      return null;
+    }
+    final operation = _IntakeOperation(_documentGeneration, _routeGeneration);
+    setState(() {
+      _intake = operation;
+      _dropHover = false;
+    });
+    return operation;
+  }
+
+  bool _validIntake(_IntakeOperation operation) =>
+      mounted &&
+      identical(_intake, operation) &&
+      _documentGeneration == operation.documentGeneration &&
+      _routeGeneration == operation.routeGeneration;
+
+  bool _beginOpening(_IntakeOperation operation) {
+    if (!_validIntake(operation)) return false;
+    setState(() {
+      operation.committing = true;
+      _busy = true;
+    });
+    return true;
+  }
+
+  void _endIntake(_IntakeOperation operation) {
+    if (!mounted || !identical(_intake, operation)) return;
+    setState(() {
+      _intake = null;
+      if (operation.committing) _busy = false;
+    });
+    _persistDeferredSettings();
+  }
+
+  Future<T> _intakeModal<T>(Future<T> Function() action) async {
+    _ownedIntakeModal = true;
+    try {
+      return await action();
+    } finally {
+      _ownedIntakeModal = false;
+    }
+  }
 
   /// Messages are shown through this rather than through the ambient
   /// [ScaffoldMessenger]. This State sits *above* the [MaterialApp] that
@@ -221,7 +328,7 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
       offPolicyResidue: store.isAvailable && _offPolicyResidue,
       storageAvailable: store.isAvailable,
       documentLabel: _governedBy(offer) ? _document?.identityLabel : null,
-      busy: _busy,
+      busy: _busy || _intake != null,
     );
   }
 
@@ -298,7 +405,7 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   /// The retention choice. Every outcome below is reported for what it is,
   /// separately for the preference and for the content (D-013).
   Future<void> _setKeepForNextTime(bool value) async {
-    if (_busy) return;
+    if (_busy || _intake != null) return;
     setState(() => _busy = true);
 
     final result = value
@@ -381,8 +488,12 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   /// this document says nothing about what happens to the next one (D-014).
   Future<void> _removeSavedDocument(BuildContext context) async {
     final current = _document;
-    if (_busy || current == null) return;
+    if (_busy || _intake != null || current == null) return;
 
+    setState(() {
+      _busy = true;
+      _dropHover = false;
+    });
     final confirmed = await _confirmRemoval(
       context,
       title: 'Remove saved document?',
@@ -391,9 +502,12 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
           'removed from this browser. "Keep for next time" stays on, so the '
           'next document you open will still be kept.',
     );
-    if (!confirmed) return;
-
-    setState(() => _busy = true);
+    if (!mounted) return;
+    if (!confirmed) {
+      setState(() => _busy = false);
+      _persistDeferredSettings();
+      return;
+    }
     final outcome = await retention.removeSavedDocument(documentId: current.id);
     if (!mounted) return;
 
@@ -402,6 +516,7 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
       if (outcome.isConfirmedAbsent) {
         // The user chose removal, not merely a change of preference, so the
         // document goes from this session too (§20.3).
+        _documentGeneration++;
         _document = null;
         _sessionPosition = null;
         _storedDocumentId = null;
@@ -423,8 +538,12 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   /// no document to name, and naming one would disclose something the app
   /// cannot open (D-015).
   Future<void> _removeRetainedData(BuildContext context) async {
-    if (_busy) return;
+    if (_busy || _intake != null) return;
 
+    setState(() {
+      _busy = true;
+      _dropHover = false;
+    });
     final confirmed = await _confirmRemoval(
       context,
       title: 'Remove saved reading data?',
@@ -432,9 +551,12 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
           'Saved document data and reading place will be removed from this '
           'browser. Your appearance settings are not affected.',
     );
-    if (!confirmed) return;
-
-    setState(() => _busy = true);
+    if (!mounted) return;
+    if (!confirmed) {
+      setState(() => _busy = false);
+      _persistDeferredSettings();
+      return;
+    }
     final outcome = await retention.removeUnreadableData();
     if (!mounted) return;
 
@@ -488,7 +610,13 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   /// store, or re-pushes a route.
   Future<void> _setScriptPreference(DocumentScriptPreference next) async {
     final current = _document;
-    if (current == null || current.scriptPreference == next) return;
+    if (_busy ||
+        _intake != null ||
+        current == null ||
+        current.scriptPreference == next) {
+      return;
+    }
+    setState(() => _busy = true);
 
     final updated = current.copyWith(scriptPreference: next);
     // Governed by the store's retention gate: under OFF this is suppressed and
@@ -497,25 +625,32 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
     if (!mounted) return;
     var unsaved = false;
     setState(() {
+      _documentGeneration++;
       _document = updated;
+      _busy = false;
       unsaved = _recordDocumentSave(updated, outcome);
     });
     // Same rule as an edit: under ON the user has been told this document is
     // kept, so a preference that did not save has to be said out loud.
+    _persistDeferredSettings();
     if (unsaved) _report('Your changes could not be saved in this browser.');
   }
 
   // --- Navigation -----------------------------------------------------------
 
-  void _returnHome() => setState(() => _atHome = true);
+  void _navigate(VoidCallback update) {
+    if (_busy || (_intake?.committing ?? false)) return;
+    setState(() {
+      _routeGeneration++;
+      _dropHover = false;
+      update();
+    });
+  }
 
-  void _openSettings() => setState(() => _atSettings = true);
-
-  void _closeSettings() => setState(() => _atSettings = false);
-
-  /// Reopens the stored document. Nothing to reload: it never left the store,
-  /// and the reader restores its own position on mount.
-  void _continueReading() => setState(() => _atHome = false);
+  void _returnHome() => _navigate(() => _atHome = true);
+  void _openSettings() => _navigate(() => _atSettings = true);
+  void _closeSettings() => _navigate(() => _atSettings = false);
+  void _continueReading() => _navigate(() => _atHome = false);
 
   // --- Document entry -------------------------------------------------------
 
@@ -570,6 +705,7 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
     final cleanup = await store.removeRetainedContent(
       suppressDocumentId: outgoing?.id,
     );
+    if (!mounted) return;
     final saved = await store.saveDocument(document);
     if (!mounted) return;
     // Under OFF anything the removal could not clear is off-policy data, and
@@ -580,6 +716,7 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
       store.setOffPolicyDataUnresolved(true);
     }
     setState(() {
+      _documentGeneration++;
       _document = document;
       if (saved.isConfirmed) {
         _storedDocumentId = document.id;
@@ -608,89 +745,149 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   }
 
   Future<void> _pasteNewDocument(BuildContext context) async {
-    if (!await _confirmReplace(context)) return;
-    if (!context.mounted) return;
-
-    final source = await showMarkdownEditor(context);
-    if (source == null) return;
-
-    await _openDocument(MarkdownDocument.fromSource(source));
+    final operation = _beginIntake();
+    if (operation == null) return;
+    try {
+      // Preserve paste's confirmation-before-editor ordering.
+      if (!await _intakeModal(() => _confirmReplace(context))) return;
+      if (!_validIntake(operation) || !context.mounted) return;
+      final source = await _intakeModal(() => showMarkdownEditor(context));
+      if (source == null || !_beginOpening(operation)) return;
+      await _openDocument(MarkdownDocument.fromSource(source));
+    } finally {
+      _endIntake(operation);
+    }
   }
 
-  /// Load from file, confirming replacement only once there is something to
-  /// replace the document *with*.
-  ///
-  /// Deliberately different from [_pasteNewDocument], which still confirms
-  /// first: there the confirmation precedes the effort, and asking after
-  /// someone has pasted a long document would waste it. Here the picker costs
-  /// nothing to cancel, so the guard belongs after a valid choice.
-  Future<void> _loadFromFile(BuildContext context) async {
-    // Resolved before the await because the context must not cross it, and then
-    // checked for each use: the system picker can stay open for an arbitrary
-    // time, so every path below runs after an unbounded gap.
-    final messenger = ScaffoldMessenger.of(context);
-    void report(String text) {
-      if (!messenger.mounted) return;
-      messenger.showSnackBar(SnackBar(content: Text(text)));
-    }
+  Future<void> _loadFromFile(BuildContext context) =>
+      _acquireFile(context, pickMarkdownFile);
 
+  /// Picker and drop share acceptance, confirmation and retention behavior.
+  Future<void> _acquireFile(
+    BuildContext context,
+    Future<LoadedFile?> Function() acquire, {
+    bool dropped = false,
+  }) async {
+    final operation = _beginIntake();
+    if (operation == null) return;
     try {
-      final file = await pickMarkdownFile();
-      if (file == null) return; // cancelled: nothing changes, nothing asked
-
+      final file = await acquire();
+      if (file == null || !_validIntake(operation) || !context.mounted) return;
+      if (dropped && (!_homeRendered || _atSettings)) return;
+      if (!isMarkdownFileName(file.name)) {
+        throw UnsupportedFileException(file.name);
+      }
       if (file.contents.trim().isEmpty) {
-        report('"${file.name}" is empty.');
+        _report('"${file.name}" is empty.');
         return;
       }
-
-      if (!context.mounted) return;
-      if (!await _confirmReplace(context)) return;
-
+      if (!await _intakeModal(() => _confirmReplace(context))) return;
+      if (!context.mounted || !_beginOpening(operation)) return;
       await _openDocument(
         MarkdownDocument.fromSource(file.contents, sourceName: file.name),
       );
     } on UnsupportedFileException catch (error) {
-      report(
-        'Cannot open "${error.fileName}". Choose a Markdown file '
-        '(.md, .markdown or .txt).',
-      );
+      if (_validIntake(operation)) {
+        _report(
+          'Cannot open "${error.fileName}". Choose a Markdown file '
+          '(.md, .markdown or .txt).',
+        );
+      }
     } catch (error) {
-      // Reading can fail for reasons outside our control - permissions, a
-      // browser restriction. Report it rather than leaving a dead button.
-      report('Could not read that file: $error');
+      if (_validIntake(operation)) _report('Could not read that file: $error');
+    } finally {
+      _endIntake(operation);
     }
   }
 
   Future<void> _editDocument(BuildContext context) async {
     final current = _document;
     if (current == null) return;
+    final operation = _beginIntake();
+    if (operation == null) return;
+    try {
+      final source = await _intakeModal(
+        () => showMarkdownEditor(context, initialText: current.source),
+      );
+      if (source == null ||
+          source == current.source ||
+          !_beginOpening(operation)) {
+        return;
+      }
 
-    final source = await showMarkdownEditor(
-      context,
-      initialText: current.source,
-    );
-    if (source == null || source == current.source) return;
+      // The reading position is kept. Block indices usually survive a small edit,
+      // and being a little off beats being sent back to the top of a long document.
+      // The origin and filename are preserved too: editing changes this device's
+      // copy, never the file it came from.
+      final updated = current.copyWith(
+        title: MarkdownDocument.deriveTitle(source),
+        source: source,
+        updatedAt: DateTime.now(),
+      );
+      final outcome = await store.saveDocument(updated);
+      if (!mounted) return;
+      var unsaved = false;
+      setState(() {
+        // Kept in memory either way, as `_openDocument` does: the user can go on
+        // reading their edit in this session. What changes is the claim - Home
+        // stops saying `Saved in this browser` for content that is not.
+        _documentGeneration++;
+        _document = updated;
+        unsaved = _recordDocumentSave(updated, outcome);
+      });
+      if (unsaved) _report('Your changes could not be saved in this browser.');
+    } finally {
+      _endIntake(operation);
+    }
+  }
 
-    // The reading position is kept. Block indices usually survive a small edit,
-    // and being a little off beats being sent back to the top of a long document.
-    // The origin and filename are preserved too: editing changes this device's
-    // copy, never the file it came from.
-    final updated = current.copyWith(
-      title: MarkdownDocument.deriveTitle(source),
-      source: source,
-      updatedAt: DateTime.now(),
+  Widget _homeDropFeedback(BuildContext context, Widget home) {
+    final color = Theme.of(context).colorScheme.primary;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        home,
+        if (_dropHover) ...[
+          Positioned.fill(
+            child: IgnorePointer(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  border: Border.all(
+                    color: color.withValues(alpha: .45),
+                    width: 3,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            top: 12,
+            left: 12,
+            right: 12,
+            child: IgnorePointer(
+              child: SafeArea(
+                child: Semantics(
+                  liveRegion: true,
+                  child: Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 8,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.surface,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Text('Drop one Markdown file to open'),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ],
     );
-    final outcome = await store.saveDocument(updated);
-    if (!mounted) return;
-    var unsaved = false;
-    setState(() {
-      // Kept in memory either way, as `_openDocument` does: the user can go on
-      // reading their edit in this session. What changes is the claim - Home
-      // stops saying `Saved in this browser` for content that is not.
-      _document = updated;
-      unsaved = _recordDocumentSave(updated, outcome);
-    });
-    if (unsaved) _report('Your changes could not be saved in this browser.');
   }
 
   /// The resolved Han lead for the app theme, or the declared default when
@@ -701,6 +898,8 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   Widget build(BuildContext context) {
     return MaterialApp(
       scaffoldMessengerKey: _messengerKey,
+      navigatorKey: _navigatorKey,
+      navigatorObservers: [_routeObserver],
       title: 'Markdown Viewer',
       debugShowCheckedModeBanner: false,
       themeMode: switch (_settings.appearance) {
@@ -737,14 +936,17 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
                 onRemoveRetainedData: () => _removeRetainedData(context),
               );
             }
-            return HomeScreen(
-              document: document,
-              retention: _retentionHomeState,
-              onContinue: _continueReading,
-              onPaste: () => _pasteNewDocument(context),
-              onLoadFile: () => _loadFromFile(context),
-              onOpenSettings: _openSettings,
-              onRemoveRetainedData: () => _removeRetainedData(context),
+            return _homeDropFeedback(
+              context,
+              HomeScreen(
+                document: document,
+                retention: _retentionHomeState,
+                onContinue: _continueReading,
+                onPaste: () => _pasteNewDocument(context),
+                onLoadFile: () => _loadFromFile(context),
+                onOpenSettings: _openSettings,
+                onRemoveRetainedData: () => _removeRetainedData(context),
+              ),
             );
           }
 
@@ -770,4 +972,27 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
       ),
     );
   }
+}
+
+class _IntakeOperation {
+  _IntakeOperation(this.documentGeneration, this.routeGeneration);
+  final int documentGeneration;
+  final int routeGeneration;
+  bool committing = false;
+}
+
+class _EntryRouteObserver extends NavigatorObserver {
+  _EntryRouteObserver(this.changed);
+  final VoidCallback changed;
+  @override
+  void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) =>
+      changed();
+  @override
+  void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) => changed();
+  @override
+  void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) =>
+      changed();
+  @override
+  void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) =>
+      changed();
 }

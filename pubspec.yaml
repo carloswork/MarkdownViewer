@@ -40,7 +40,12 @@ dependencies:
   # fallback and issues no request of its own. See DEPLOY.md.
   file_selector: 1.1.0
 
+  # Direct browser-event bindings; already resolved in the lockfile.
+  web: 1.1.1
+
 dev_dependencies:
+  # Existing picker interface, promoted for deterministic platform/filter tests.
+  file_selector_platform_interface: ^2.7.0
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0

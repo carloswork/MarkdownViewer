@@ -575,6 +575,9 @@ void main() {
       await settle(tester);
       await tester.tap(find.text('Load from file'));
       await settle(tester);
+      // The sheet must detach before Root reserves intake. Its end-of-frame
+      // continuation needs one subsequent frame, then the picker/confirmation.
+      await settle(tester);
     }
 
     testWidgets('cancelling the picker leaves the reader untouched', (

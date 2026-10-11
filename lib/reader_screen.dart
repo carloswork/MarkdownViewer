@@ -873,10 +873,16 @@ class _ReaderScreenState extends State<ReaderScreen>
     final paragraph = copy.resolveParagraph();
     if (paragraph == null || !paragraph.hasSize) return null;
     if (match.start < 0 || match.start >= match.end) return null;
-    final base =
-        offsetIncludingPlaceholders(paragraph.text, match.start, isStart: true);
-    final extent =
-        offsetIncludingPlaceholders(paragraph.text, match.end, isStart: false);
+    final base = offsetIncludingPlaceholders(
+      paragraph.text,
+      match.start,
+      isStart: true,
+    );
+    final extent = offsetIncludingPlaceholders(
+      paragraph.text,
+      match.end,
+      isStart: false,
+    );
     if (base == null || extent == null) return null;
     final rects = _selectionRects(paragraph, base, extent);
     if (rects.isEmpty) return null;
@@ -897,7 +903,8 @@ class _ReaderScreenState extends State<ReaderScreen>
     final matchTop = paragraph.localToGlobal(rect.topLeft).dy;
     final matchBottom = paragraph.localToGlobal(rect.bottomLeft).dy;
     const margin = 24.0;
-    final visible = matchTop >= viewportTop + margin &&
+    final visible =
+        matchTop >= viewportTop + margin &&
         matchBottom <= viewportTop + viewportHeight - margin;
     final delta = matchTop - (viewportTop + margin);
     return _RangeReveal(scrollable.position, delta, visible);
@@ -919,9 +926,11 @@ class _ReaderScreenState extends State<ReaderScreen>
   /// [RenderBox], or null if none is found.
   RenderBox? _outermostViewport(RenderObject node) {
     RenderBox? found;
-    for (RenderObject? current = node.parent;
-        current != null;
-        current = current.parent) {
+    for (
+      RenderObject? current = node.parent;
+      current != null;
+      current = current.parent
+    ) {
       // Test RenderBox first so flow analysis promotes `current` to RenderBox for
       // the assignment: promotion only narrows to subtypes, and RenderBox is not
       // a subtype of RenderAbstractViewport, so the reverse order would leave
@@ -1251,8 +1260,12 @@ class _ReaderScreenState extends State<ReaderScreen>
           onChanged: widget.onScriptPreferenceChanged,
         );
       case _MenuAction.edit:
+        await _waitForMenuToClose(menuKey);
+        if (!mounted) return;
         widget.onEdit();
       case _MenuAction.loadFile:
+        await _waitForMenuToClose(menuKey);
+        if (!mounted) return;
         widget.onLoadFile();
       case _MenuAction.home:
         await _waitForMenuToClose(menuKey);
@@ -1416,15 +1429,14 @@ class _ReaderScreenState extends State<ReaderScreen>
               // §5.6, §D-1).
               child: ReaderSearchScope(
                 model: _searchModel,
-                registry: _activeLocatorRegistry ??=
-                    ActiveLocatorRegistry(
-                      _readerRevision ??
-                          DocumentRevision.fromDocument(
-                            id: widget.document.id,
-                            updatedAt: widget.document.updatedAt,
-                            source: widget.document.source,
-                          ),
-                    ),
+                registry: _activeLocatorRegistry ??= ActiveLocatorRegistry(
+                  _readerRevision ??
+                      DocumentRevision.fromDocument(
+                        id: widget.document.id,
+                        updatedAt: widget.document.updatedAt,
+                        source: widget.document.source,
+                      ),
+                ),
                 revision: _activeLocatorRegistry!.revision,
                 child: SelectionArea(
                   child: ScrollablePositionedList.builder(
