@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.6.1 — 2026-10-13
+
+- Dragging a file over the main screen on Windows desktop no longer shows a border and drop message. Dropping one Markdown file still opens it. When a drop does not contain exactly one file, the message now reads: “Please drop one Markdown or text file, or use Load from file.”
+
 ## v1.6.0 — 2026-10-11
 
 - Added Windows desktop loading by dropping one local Markdown file anywhere on the main screen, with temporary feedback and the existing replacement confirmation. Load from file remains available.
