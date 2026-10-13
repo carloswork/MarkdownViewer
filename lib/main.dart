@@ -121,7 +121,6 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   int _documentGeneration = 0;
   int _routeGeneration = 0;
   bool _ownedIntakeModal = false;
-  bool _dropHover = false;
   bool _disposing = false;
 
   bool get _homeRendered => _atHome || _document == null || _inRecovery;
@@ -139,7 +138,7 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
     super.initState();
     _dropLease = widget.fileDropMount(
       eligible: () => _dropEligible,
-      onHover: (value) => _setDropHover(value && _dropEligible),
+      onHover: (_) {},
       onCandidate: (candidate) {
         final context = _navigatorKey.currentContext;
         if (context != null && _dropEligible) {
@@ -158,15 +157,9 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
     super.dispose();
   }
 
-  void _setDropHover(bool value) {
-    if (!mounted || _disposing || value == _dropHover) return;
-    setState(() => _dropHover = value);
-  }
-
   void _modalRouteChanged() {
     if (_ownedIntakeModal) return;
     _routeGeneration++;
-    _setDropHover(false);
   }
 
   _IntakeOperation? _beginIntake() {
@@ -178,7 +171,6 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
     final operation = _IntakeOperation(_documentGeneration, _routeGeneration);
     setState(() {
       _intake = operation;
-      _dropHover = false;
     });
     return operation;
   }
@@ -492,7 +484,6 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
 
     setState(() {
       _busy = true;
-      _dropHover = false;
     });
     final confirmed = await _confirmRemoval(
       context,
@@ -542,7 +533,6 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
 
     setState(() {
       _busy = true;
-      _dropHover = false;
     });
     final confirmed = await _confirmRemoval(
       context,
@@ -642,7 +632,6 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
     if (_busy || (_intake?.committing ?? false)) return;
     setState(() {
       _routeGeneration++;
-      _dropHover = false;
       update();
     });
   }
@@ -841,55 +830,6 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
     }
   }
 
-  Widget _homeDropFeedback(BuildContext context, Widget home) {
-    final color = Theme.of(context).colorScheme.primary;
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        home,
-        if (_dropHover) ...[
-          Positioned.fill(
-            child: IgnorePointer(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  border: Border.all(
-                    color: color.withValues(alpha: .45),
-                    width: 3,
-                  ),
-                ),
-              ),
-            ),
-          ),
-          Positioned(
-            top: 12,
-            left: 12,
-            right: 12,
-            child: IgnorePointer(
-              child: SafeArea(
-                child: Semantics(
-                  liveRegion: true,
-                  child: Center(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 8,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.surface,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: const Text('Drop one Markdown file to open'),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ],
-    );
-  }
-
   /// The resolved Han lead for the app theme, or the declared default when
   /// there is no document at all.
   HanScript get _resolvedScript => resolveHanScriptForDocument(_document);
@@ -936,17 +876,14 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
                 onRemoveRetainedData: () => _removeRetainedData(context),
               );
             }
-            return _homeDropFeedback(
-              context,
-              HomeScreen(
-                document: document,
-                retention: _retentionHomeState,
-                onContinue: _continueReading,
-                onPaste: () => _pasteNewDocument(context),
-                onLoadFile: () => _loadFromFile(context),
-                onOpenSettings: _openSettings,
-                onRemoveRetainedData: () => _removeRetainedData(context),
-              ),
+            return HomeScreen(
+              document: document,
+              retention: _retentionHomeState,
+              onContinue: _continueReading,
+              onPaste: () => _pasteNewDocument(context),
+              onLoadFile: () => _loadFromFile(context),
+              onOpenSettings: _openSettings,
+              onRemoveRetainedData: () => _removeRetainedData(context),
             );
           }
 

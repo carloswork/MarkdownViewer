@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:markdown_viewer/file_drop.dart';
 import 'package:markdown_viewer/file_loader.dart';
 import 'package:markdown_viewer/home_screen.dart';
+import 'package:markdown_viewer/home_widgets.dart';
 import 'package:markdown_viewer/main.dart';
 import 'package:markdown_viewer/models.dart';
 import 'package:markdown_viewer/reader_screen.dart';
@@ -54,16 +55,19 @@ void main() {
     WidgetTester tester, {
     MarkdownDocument? current,
     bool keep = false,
+    AppearanceMode appearance = AppearanceMode.system,
+    bool recovery = false,
   }) async {
     tester.view.physicalSize = const Size(1100, 900);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     backend.data[Store.settingsKey] = jsonEncode(
-      Settings(keepForNextTime: keep).toJson(),
+      Settings(keepForNextTime: keep, appearance: appearance).toJson(),
     );
     if (keep && current != null) {
       backend.data[Store.documentKey] = jsonEncode(current.toJson());
     }
+    if (recovery) backend.data[Store.documentKey] = 'broken document JSON';
     await store.init(backend: backend);
     final startup = await retention.resolveStartup();
     backend.writes.clear();
@@ -90,24 +94,25 @@ void main() {
     pickMarkdownFile = openAndReadMarkdownFile;
   });
 
-  testWidgets('keyboard picker fallback works while drop feedback is visible', (
-    tester,
-  ) async {
-    var picks = 0;
-    pickMarkdownFile = () async {
-      picks++;
-      return next;
-    };
-    await launch(tester);
-    port.hover(true);
-    await tick(tester);
-    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
-    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-    await tick(tester);
-    expect(picks, 1);
-    expect(reader(tester).document.source, next.contents);
-    expect(find.text('Drop one Markdown file to open'), findsNothing);
-  });
+  testWidgets(
+    'keyboard picker fallback works during dragging without feedback',
+    (tester) async {
+      var picks = 0;
+      pickMarkdownFile = () async {
+        picks++;
+        return next;
+      };
+      await launch(tester);
+      port.hover(true);
+      await tick(tester);
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tick(tester);
+      expect(picks, 1);
+      expect(reader(tester).document.source, next.contents);
+      expect(find.text('Drop one Markdown file to open'), findsNothing);
+    },
+  );
 
   testWidgets('phone-size layout retains the shared picker path', (
     tester,
@@ -397,26 +402,93 @@ void main() {
     expect(reader(tester).sessionPosition, isNull);
     expect(reader(tester).document.id, isNot(old.id));
   });
-  testWidgets(
-    'hover is transient non-intercepting feedback and navigation clears it',
-    (tester) async {
-      await launch(tester);
-      port.hover(true);
-      await tick(tester);
-      expect(find.text('Drop one Markdown file to open'), findsOneWidget);
-      final semantics = tester.widget<Semantics>(
-        find
-            .ancestor(
-              of: find.text('Drop one Markdown file to open'),
-              matching: find.byType(Semantics),
-            )
-            .first,
-      );
-      expect(semantics.properties.liveRegion, isTrue);
-      await tester.tap(find.text('Settings'));
-      await tick(tester);
-      expect(find.text('Drop one Markdown file to open'), findsNothing);
-      expect(port.eligible(), isFalse);
-    },
-  );
+  for (final appearance in [AppearanceMode.light, AppearanceMode.dark]) {
+    for (final size in [const Size(1100, 900), const Size(390, 844)]) {
+      for (final state in ['empty', 'document', 'recovery']) {
+        testWidgets(
+          'drag leaves normal card unchanged: $appearance $size $state',
+          (tester) async {
+            final semanticsHandle = tester.ensureSemantics();
+
+            await launch(
+              tester,
+              current: state == 'document' ? old : null,
+              keep: state == 'recovery',
+              recovery: state == 'recovery',
+              appearance: appearance,
+            );
+            tester.view.physicalSize = size;
+            await tick(tester);
+            await tester.ensureVisible(find.text('Load from file'));
+            await tick(tester);
+            if (state == 'recovery') {
+              expect(home(tester).retention.recovery, isTrue);
+            }
+            final card = find.byWidgetPredicate(
+              (w) => w is ActionCard && w.label == 'Load from file',
+            );
+            List<Object?> snapshot() {
+              final action = tester.widget<ActionCard>(card);
+              final material = tester.widget<Material>(
+                find
+                    .descendant(of: card, matching: find.byType(Material))
+                    .first,
+              );
+              final semantic = tester.widget<Semantics>(
+                find
+                    .descendant(of: card, matching: find.byType(Semantics))
+                    .first,
+              );
+              return [
+                action.detail,
+                action.status,
+                action.onTap != null,
+                material.color,
+                material.shape,
+                material.borderRadius,
+                tester.getRect(card),
+                tester.getRect(find.text('Load from file')),
+                semantic.properties.label,
+                semantic.properties.hint,
+                semantic.properties.button,
+                semantic.properties.enabled,
+                semantic.properties.liveRegion,
+                find.byType(Positioned).evaluate().length,
+                find.byType(DecoratedBox).evaluate().length,
+                find
+                    .byType(Semantics)
+                    .evaluate()
+                    .where(
+                      (e) =>
+                          (e.widget as Semantics).properties.liveRegion == true,
+                    )
+                    .length,
+              ];
+            }
+
+            final normal = snapshot();
+            final normalHome = home(tester);
+            expect(port.eligible(), isTrue);
+            for (final hover in [true, true, false, true, false]) {
+              port.hover(hover);
+              await tick(tester);
+              expect(find.text('Drop one Markdown file to open'), findsNothing);
+              expect(snapshot(), normal);
+              expect(home(tester), same(normalHome));
+              expect(port.eligible(), isTrue);
+              expect(tester.takeException(), isNull);
+            }
+            semanticsHandle.dispose();
+            await tester.ensureVisible(find.text('Settings'));
+            await tester.tap(find.text('Settings'));
+            await tick(tester);
+            expect(port.eligible(), isFalse);
+            port.hover(true);
+            await tick(tester);
+            expect(find.text('Drop one Markdown file to open'), findsNothing);
+          },
+        );
+      }
+    }
+  }
 }

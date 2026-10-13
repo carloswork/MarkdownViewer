@@ -51,7 +51,7 @@ FileDropLease mountFileDrop({
         if (item.kind == 'file') items.add(item);
       }
       if (items.length != 1 || transfer.files.length != 1) {
-        onRejected('Drop exactly one regular Markdown file; use the picker.');
+        onRejected('Please drop one Markdown or text file, or use Load from file.');
         return;
       }
       final item = items.single;
