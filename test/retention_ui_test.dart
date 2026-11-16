@@ -1258,7 +1258,9 @@ void main() {
       expect(choice.label, contains('Keep for next time'));
       expect(
         choice.label,
-        contains('Store this document and your reading place in this browser'),
+        contains(
+          'Store your open documents and your reading places in this browser',
+        ),
       );
 
       // The destructive control announces its consequence, so the warning is
@@ -1553,7 +1555,7 @@ void main() {
       // The switch's own helper says what the choice does.
       expect(
         find.textContaining(
-          'Store this document and your reading place in this browser',
+          'Store your open documents and your reading places in this browser',
         ),
         findsOneWidget,
       );

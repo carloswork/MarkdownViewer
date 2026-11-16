@@ -217,13 +217,16 @@ void main() {
 
   group('raw presence', () {
     test('present, absent and indeterminate are distinguished', () async {
+      await store.refreshContentPresence();
       expect(store.rawKeyPresence(Store.documentKey), RawKeyPresence.absent);
 
       backend.data[Store.documentKey] = 'anything at all';
+      await store.refreshContentPresence();
       expect(store.rawKeyPresence(Store.documentKey), RawKeyPresence.present);
       expect(store.rawContentPresence(), RawKeyPresence.present);
 
       backend.failReads.add(Store.documentKey);
+      await store.refreshContentPresence();
       expect(
         store.rawKeyPresence(Store.documentKey),
         RawKeyPresence.indeterminate,
@@ -231,13 +234,15 @@ void main() {
       expect(store.rawContentPresence(), RawKeyPresence.indeterminate);
     });
 
-    test('an orphaned position alone counts as retained content', () {
+    test('an orphaned position alone counts as retained content', () async {
       backend.data[Store.positionKey] = 'orphan';
+      await store.refreshContentPresence();
       expect(store.rawContentPresence(), RawKeyPresence.present);
     });
 
     test('presence does not depend on the record decoding', () async {
       backend.data[Store.documentKey] = 'not json';
+      await store.refreshContentPresence();
       expect(store.loadDocument(), isNull);
       expect(store.rawKeyPresence(Store.documentKey), RawKeyPresence.present);
     });
@@ -564,7 +569,8 @@ void main() {
       await retention.resolveStartup();
       final d = doc();
 
-      final result = await retention.enable(
+      final result = await enableRetaining(
+        retention,
         current: const Settings(),
         document: d,
         position: posFor(d),
@@ -584,7 +590,8 @@ void main() {
       backend.failWrites.add(Store.settingsKey);
       final d = doc();
 
-      final result = await retention.enable(
+      final result = await enableRetaining(
+        retention,
         current: const Settings(),
         document: d,
       );
@@ -603,7 +610,8 @@ void main() {
       await retention.resolveStartup();
       backend.failWrites.add(Store.documentKey);
 
-      final result = await retention.enable(
+      final result = await enableRetaining(
+        retention,
         current: const Settings(),
         document: doc(),
       );
@@ -626,7 +634,8 @@ void main() {
         backend.failWrites.add(Store.positionKey);
         final d = doc();
 
-        final result = await retention.enable(
+        final result = await enableRetaining(
+          retention,
           current: const Settings(),
           document: d,
           position: posFor(d),
@@ -634,7 +643,12 @@ void main() {
 
         expect(result.documentOutcome, WriteOutcome.saved);
         expect(result.positionOutcome, WriteOutcome.failed);
-        expect(result.keptForNextTime, isTrue);
+        // DF-020 §5.4 (I-5): `Kept for next time` now needs the reading state
+        // too, because it carries the active document and every place. The
+        // document itself is still reported saved, which is what this test
+        // protects.
+        expect(result.documentConfirmed, isTrue);
+        expect(result.keptForNextTime, isFalse);
       },
     );
 
@@ -650,14 +664,20 @@ void main() {
       );
       expect(other.id, isNot(d.id));
 
-      final result = await retention.enable(
+      final result = await enableRetaining(
+        retention,
         current: const Settings(),
         document: d,
         position: posFor(other),
       );
 
-      expect(result.positionOutcome, isNull);
-      expect(store.rawKeyPresence(Store.positionKey), RawKeyPresence.absent);
+      // DF-020 D-8: the reading state is always written with the open set,
+      // because it carries the active document. What must not be written is a
+      // place for a document that is not open, and none is.
+      expect(result.positionOutcome, WriteOutcome.saved);
+      expect(store.loadPosition(other.id), isNull);
+      expect(store.loadPosition(d.id), isNull);
+      expect(store.loadRetained()!.activeId, d.id);
     });
   });
 
@@ -679,7 +699,8 @@ void main() {
       expect(resolution.offPolicyDataUnresolved, isTrue);
       expect(retention.offPolicyDataUnresolved, isTrue);
 
-      final result = await retention.enable(
+      final result = await enableRetaining(
+        retention,
         current: const Settings(),
         document: doc('# New'),
       );
@@ -707,7 +728,8 @@ void main() {
       // The user retries after the obstruction clears.
       backend.failDeletes.clear();
       final fresh = doc('# Chosen now');
-      final result = await retention.enable(
+      final result = await enableRetaining(
+        retention,
         current: const Settings(),
         document: fresh,
       );
@@ -730,7 +752,8 @@ void main() {
         backend.failDeletes.add(Store.documentKey);
 
         await retention.resolveStartup();
-        await retention.enable(
+        await enableRetaining(
+          retention,
           current: const Settings(),
           document: doc('# New'),
         );
@@ -1014,7 +1037,7 @@ void main() {
       final mutations = <String>[];
       for (final file in libFiles()) {
         final source = read(file.path);
-        for (final call in const ['backend.write(', 'backend.delete(']) {
+        for (final call in const ['_content!.write(', '_content!.delete(']) {
           for (
             var i = source.indexOf(call);
             i > -1;
@@ -1048,18 +1071,18 @@ void main() {
       final source = read('lib/store.dart');
 
       for (final writer in const [
-        'Future<WriteOutcome> saveDocument(',
-        'Future<WriteOutcome> savePosition(',
+        'Future<WriteReceipt> requestDocumentsWrite(',
+        'Future<WriteReceipt> requestReadingStateWrite(',
       ]) {
         final body = bodyOf(source, writer);
         expect(
           body,
-          contains('_writeContent('),
+          contains('_requestWrite('),
           reason: '$writer must reach storage only through the gate',
         );
         expect(
           body,
-          isNot(contains('_put(')),
+          isNot(contains('_store(')),
           reason: '$writer must not bypass the gate',
         );
       }
@@ -1068,13 +1091,13 @@ void main() {
     test('the gated path refuses before it writes', () {
       final body = bodyOf(
         read('lib/store.dart'),
-        'Future<WriteOutcome> _writeContent(',
+        'Future<WriteReceipt> _runWrite(',
       );
 
       expect(body, contains('RetentionPolicy.off'));
       expect(
         body.indexOf('WriteOutcome.suppressedByPolicy'),
-        lessThan(body.indexOf('_put(')),
+        lessThan(body.indexOf('_writeKey(')),
         reason: 'the refusal must precede the write, not follow it',
       );
       expect(
@@ -1090,10 +1113,10 @@ void main() {
         'Future<WriteOutcome> saveSettings(',
       );
 
-      expect(body, contains('_put('));
+      expect(body, contains('_boundedSettingsWrite('));
       expect(
         body,
-        isNot(contains('_writeContent(')),
+        isNot(contains('_requestWrite(')),
         reason: 'appearance and the retention choice itself survive OFF',
       );
     });

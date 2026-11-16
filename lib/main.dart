@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import 'document_session.dart';
 import 'file_loader.dart';
@@ -100,15 +101,59 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   DocumentSession _initialSession() {
     final document = widget.initialDocument;
     if (document == null) return DocumentSession.empty;
-    _ids.reserve([document.id]);
-    final position = store.effectivePolicy == RetentionPolicy.on
-        ? store.loadPosition(document.id)
+    // The whole stored set, its positions and its active document, decoded
+    // only under a confirmed ON policy (D-1, I-7).
+    final retained = store.effectivePolicy == RetentionPolicy.on
+        ? store.loadRetained()
         : null;
+    if (retained != null && retained.activeId == document.id) {
+      _ids.reserve(retained.documents.map((d) => d.id));
+      return DocumentSession.restored(
+        // The active document is the one startup already decoded and passed
+        // in; the rest come from the same stored set.
+        documents: [
+          for (final stored in retained.documents)
+            stored.id == document.id ? document : stored,
+        ],
+        activeId: retained.activeId,
+        positions: retained.positions,
+      );
+    }
+    _ids.reserve([document.id]);
     return DocumentSession.restored(
       documents: [document],
       activeId: document.id,
-      positions: {document.id: ?position},
     );
+  }
+
+  /// What the content writers capture: the session, at the moment they run.
+  RetainedSnapshot _retainedSnapshot() => RetainedSnapshot(
+    documents: _session.documents,
+    activeId: _session.activeId,
+    positions: _session.positions,
+    documentsRevision: _session.documentsRevision,
+    readingStateRevision: _session.readingStateRevision,
+  );
+
+  /// Re-derives what Home claims about saved state when a receipt lands.
+  ///
+  /// Receipts usually land while Flutter is idle - a write completing after
+  /// everything on screen has settled - and then a plain `setState` is right:
+  /// it schedules the frame itself. One can also land while the tree is being
+  /// built or finalized, for example from a reader's disposal report, when a
+  /// rebuild cannot be requested; then it waits for the next frame, and that
+  /// frame is requested explicitly so the claim cannot stay stale.
+  void _savedStateChanged() {
+    if (!mounted || _disposing) return;
+    final binding = WidgetsBinding.instance;
+    if (binding.schedulerPhase != SchedulerPhase.persistentCallbacks) {
+      setState(() {});
+      return;
+    }
+    binding.addPostFrameCallback((_) {
+      if (mounted && !_disposing) setState(() {});
+    });
+    binding.scheduleFrame();
   }
 
   /// A new document's ID: unused by any open document, and never one restored
@@ -120,16 +165,19 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   /// Recorded against the reporting document's ID. A report for a document
   /// that is no longer open - a replaced document's reader reports once more
   /// as it is disposed, after the replacement - is ignored, and nothing is
-  /// stored for it. Otherwise the place is offered to the store, whose
-  /// retention gate decides whether it is kept.
+  /// stored for it. A changed place requests a reading-state write, which
+  /// captures the session when it runs; the store's retention gate decides
+  /// whether anything is written.
   ///
   /// No `setState`: the reader reads its position once, at mount, so nothing
   /// on screen depends on this, and the disposal report arrives while the tree
   /// is being finalized, when a rebuild cannot be requested.
   void _onPositionReported(ReadingPosition position) {
     if (!_session.contains(position.documentId)) return;
-    _session = _session.recordPosition(position);
-    unawaited(store.savePosition(position));
+    final next = _session.recordPosition(position);
+    if (identical(next, _session)) return;
+    _session = next;
+    unawaited(store.requestReadingStateWrite());
   }
 
   /// Which of the two screens is showing.
@@ -146,19 +194,6 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   /// Whether Home is showing Settings. Set only from Home, and Settings only
   /// ever returns there, so it has no meaning outside the Home route.
   bool _atSettings = false;
-
-  /// The document this session last *confirmed* stored, if any.
-  ///
-  /// Tracked from real write outcomes rather than inferred from the preference
-  /// or from key presence. A stored `document` key proves that something is
-  /// stored, not that it is the document on screen: after a failed replacement
-  /// or a failed edit, the bytes on disk are an older or different document,
-  /// and `Saved in this browser` would describe something the user is not
-  /// looking at.
-  late String? _storedDocumentId = widget.initialDocument?.id;
-
-  /// Whether that stored copy includes the latest in-memory changes.
-  bool _storedDocumentCurrent = true;
 
   /// What Home says about retention state, if anything.
   late List<RetentionAlert> _alerts = _initialAlerts();
@@ -193,6 +228,8 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   @override
   void initState() {
     super.initState();
+    store.registerRetainedSource(_retainedSnapshot);
+    store.savedState.addListener(_savedStateChanged);
     _dropLease = widget.fileDropMount(
       eligible: () => _dropEligible,
       onHover: (_) {},
@@ -209,6 +246,8 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   @override
   void dispose() {
     _disposing = true;
+    store.savedState.removeListener(_savedStateChanged);
+    store.unregisterRetainedSource(_retainedSnapshot);
     _dropLease.dispose();
     _intake = null;
     super.dispose();
@@ -312,21 +351,27 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
 
   /// What Home may offer as a way back in.
   ///
-  /// `retained` requires the live policy to be ON, a stored document key, *and*
-  /// that the stored copy is known to be this document - not merely that some
-  /// document is on disk. `retainedOutOfDate` is that same stored copy when the
-  /// latest changes to it failed to save. Anything else is current-session.
+  /// `retained` requires the live policy to be ON, a committed `document` key
+  /// holding only documents that are open now, and both keys confirmed stored
+  /// at the session's current revisions (§5.6). `retainedOutOfDate` is that
+  /// same stored set when either key is unconfirmed or behind. Stored content
+  /// that is not a subset of the open documents is not this session's saved
+  /// state - it is residue - and earns no saved claim at all.
   ContinueOffer get _continueOffer {
     final document = _document;
     if (document == null) return ContinueOffer.none;
-    final storedCopyOfThis =
-        store.effectivePolicy == RetentionPolicy.on &&
-        _storedDocumentId == document.id &&
-        store.rawKeyPresence(Store.documentKey) == RawKeyPresence.present;
-    if (!storedCopyOfThis) return ContinueOffer.currentSession;
-    return _storedDocumentCurrent
-        ? ContinueOffer.retained
-        : ContinueOffer.retainedOutOfDate;
+    if (store.effectivePolicy != RetentionPolicy.on ||
+        store.rawKeyPresence(Store.documentKey) != RawKeyPresence.present) {
+      return ContinueOffer.currentSession;
+    }
+    final stored = store.committedDocumentIds;
+    if (stored == null || !stored.every(_session.contains)) {
+      return ContinueOffer.currentSession;
+    }
+    final current =
+        store.confirmedDocumentsRevision == _session.documentsRevision &&
+        store.confirmedReadingStateRevision == _session.readingStateRevision;
+    return current ? ContinueOffer.retained : ContinueOffer.retainedOutOfDate;
   }
 
   bool _governedBy(ContinueOffer offer) =>
@@ -377,23 +422,17 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
       offPolicyResidue: store.isAvailable && _offPolicyResidue,
       storageAvailable: store.isAvailable,
       documentLabel: _governedBy(offer) ? _document?.identityLabel : null,
+      savedDocumentCount: _session.documents.length,
       busy: _busy || _intake != null,
     );
   }
 
-  /// Records the outcome of saving the in-memory [document] under ON.
-  ///
-  /// Returns whether the caller must tell the user the save did not land.
-  bool _recordDocumentSave(MarkdownDocument document, WriteOutcome outcome) {
-    if (outcome.isConfirmed) {
-      _storedDocumentId = document.id;
-      _storedDocumentCurrent = true;
-      return false;
-    }
-    if (store.effectivePolicy != RetentionPolicy.on) return false;
-    if (_storedDocumentId == document.id) _storedDocumentCurrent = false;
-    return true;
-  }
+  /// Whether a document write the user was promised under ON did not land,
+  /// so they must be told. Under OFF nothing is promised.
+  bool _unsavedUnderOn(WriteReceipt receipt) =>
+      store.effectivePolicy == RetentionPolicy.on &&
+      receipt.outcome != WriteOutcome.suppressedByPolicy &&
+      !receipt.confirmed;
 
   void _onSettingsChanged(Settings settings) {
     // Appearance only. The retention choice changes through its own
@@ -432,6 +471,9 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
     if (!outcome.isConfirmed &&
         outcome != WriteOutcome.superseded &&
         outcome != WriteOutcome.unavailable &&
+        // Not confirmed in time is not the same as not saved; it is not
+        // reported per change either, for the same reason as `unavailable`.
+        outcome != WriteOutcome.indeterminate &&
         mounted) {
       _report('Your settings could not be saved in this browser.');
     }
@@ -458,11 +500,7 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
     setState(() => _busy = true);
 
     final result = value
-        ? await retention.enable(
-            current: _settings,
-            document: _document,
-            position: _sessionPosition,
-          )
+        ? await retention.enable(current: _settings)
         : await retention.disable(current: _settings);
 
     if (!mounted) return;
@@ -470,14 +508,6 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
       _settings = _settings.copyWith(
         keepForNextTime: result.effectivePolicy == RetentionPolicy.on,
       );
-      if (result.requested == RetentionPolicy.on && result.documentConfirmed) {
-        _storedDocumentId = _document?.id;
-        _storedDocumentCurrent = true;
-      }
-      if (result.requested == RetentionPolicy.off &&
-          result.contentConfirmedAbsent) {
-        _storedDocumentId = null;
-      }
       _alerts = _alertsFor(result);
       _busy = false;
     });
@@ -517,6 +547,11 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
       return 'Saved reading data must be removed from this browser first.';
     }
     if (result.requested == RetentionPolicy.on) {
+      if (result.preferenceOutcome == WriteOutcome.indeterminate) {
+        // Issued but not confirmed in time: it may yet land, so "could not be
+        // saved" would be untrue. What is true is the D-013 statement.
+        return 'Your choice may not be kept for your next visit.';
+      }
       if (!result.preferenceConfirmed) {
         return 'Your choice could not be saved in this browser.';
       }
@@ -533,22 +568,31 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
     return 'Saved reading data could not be removed.';
   }
 
-  /// `Remove saved document`. Separate from the preference by design: removing
-  /// this document says nothing about what happens to the next one (D-014).
+  /// `Remove saved document(s)`. Separate from the preference by design:
+  /// removing what is saved says nothing about what happens to the next
+  /// document (D-014). Under ON every open document is saved, so all of them
+  /// are removed, verified gone, and closed (D-10).
   Future<void> _removeSavedDocument(BuildContext context) async {
     final current = _document;
     if (_busy || _intake != null || current == null) return;
+    final ids = _session.ids;
+    final others = ids.length - 1;
 
     setState(() {
       _busy = true;
     });
     final confirmed = await _confirmRemoval(
       context,
-      title: 'Remove saved document?',
-      body:
-          '"${current.identityLabel}" and your reading place in it will be '
-          'removed from this browser. "Keep for next time" stays on, so the '
-          'next document you open will still be kept.',
+      title: others == 0 ? 'Remove saved document?' : 'Remove saved documents?',
+      body: others == 0
+          ? '"${current.identityLabel}" and your reading place in it will be '
+                'removed from this browser. "Keep for next time" stays on, so '
+                'the next document you open will still be kept.'
+          : '"${current.identityLabel}" and $others other '
+                '${others == 1 ? 'document' : 'documents'}, and your reading '
+                'places in them, will be removed from this browser and closed. '
+                '"Keep for next time" stays on, so the next document you open '
+                'will still be kept.',
     );
     if (!mounted) return;
     if (!confirmed) {
@@ -556,17 +600,19 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
       _persistDeferredSettings();
       return;
     }
-    final outcome = await retention.removeSavedDocument(documentId: current.id);
+    final outcome = await retention.removeSavedDocument(documentIds: ids);
     if (!mounted) return;
 
     setState(() {
       _busy = false;
       if (outcome.isConfirmedAbsent) {
         // The user chose removal, not merely a change of preference, so the
-        // document and its reading place go from this session too (§20.3).
+        // documents and their reading places go from this session too, and
+        // Home is empty (§20.3; D-10).
         _documentGeneration++;
-        _session = _session.close(current.id).session;
-        _storedDocumentId = null;
+        for (final id in ids) {
+          if (_session.contains(id)) _session = _session.close(id).session;
+        }
         _atHome = true;
         _alerts = const [];
       } else {
@@ -608,7 +654,6 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
 
     setState(() {
       _busy = false;
-      if (outcome.isConfirmedAbsent) _storedDocumentId = null;
       _alerts = outcome.isConfirmedAbsent
           ? const []
           : [RetentionAlert.dataMayRemain];
@@ -665,17 +710,17 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
     setState(() => _busy = true);
 
     final updated = current.copyWith(scriptPreference: next);
-    // Governed by the store's retention gate: under OFF this is suppressed and
-    // the preference stays in memory for the current session only.
-    final outcome = await store.saveDocument(updated);
-    if (!mounted) return;
-    var unsaved = false;
+    // The session first, then the write, which captures it (§4.5). Governed by
+    // the store's retention gate: under OFF nothing is written and the
+    // preference stays in memory for the current session only.
     setState(() {
       _documentGeneration++;
       _session = _session.updateDocument(updated);
-      _busy = false;
-      unsaved = _recordDocumentSave(updated, outcome);
     });
+    final receipt = await store.requestDocumentsWrite();
+    if (!mounted) return;
+    final unsaved = _unsavedUnderOn(receipt);
+    setState(() => _busy = false);
     // Same rule as an edit: under ON the user has been told this document is
     // kept, so a preference that did not save has to be said out loud.
     _persistDeferredSettings();
@@ -751,8 +796,6 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
       suppressDocumentId: outgoing?.id,
     );
     if (!mounted) return;
-    final saved = await store.saveDocument(document);
-    if (!mounted) return;
     // Under OFF anything the removal could not clear is off-policy data, and
     // the interlock has to know that before any later attempt to turn ON.
     if (store.effectivePolicy == RetentionPolicy.off &&
@@ -771,12 +814,6 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
               replacements: {replaced.id: document},
               activeId: document.id,
             );
-      if (saved.isConfirmed) {
-        _storedDocumentId = document.id;
-        _storedDocumentCurrent = true;
-      } else if (cleanup.isConfirmedAbsent) {
-        _storedDocumentId = null;
-      }
       _atHome = false;
       // A load supersedes whatever the last retention operation reported. The
       // exception is a preference that still cannot be written: that describes
@@ -785,10 +822,14 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
           .where((a) => a == RetentionAlert.preferenceMayNotPersist)
           .toList();
     });
+    // The writes capture the session that now holds the new document.
+    final saved = store.requestDocumentsWrite();
+    unawaited(store.requestReadingStateWrite());
+    final receipt = await saved;
+    if (!mounted) return;
     // Under ON the user has been told their documents are kept; a save that did
     // not land contradicts that and has to be said out loud.
-    if (store.effectivePolicy == RetentionPolicy.on &&
-        saved != WriteOutcome.saved) {
+    if (store.effectivePolicy == RetentionPolicy.on && !receipt.confirmed) {
       _report('This document could not be saved in this browser.');
     }
   }
@@ -879,18 +920,19 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
         source: source,
         updatedAt: DateTime.now(),
       );
-      final outcome = await store.saveDocument(updated);
-      if (!mounted) return;
-      var unsaved = false;
+      // The session first, then the write, which captures it (§4.5). The edit
+      // stands in memory either way: the user goes on reading it in this
+      // session. What a failed write changes is the claim - Home stops saying
+      // `Saved in this browser` for content that is not.
       setState(() {
-        // Kept in memory either way, as `_openDocument` does: the user can go on
-        // reading their edit in this session. What changes is the claim - Home
-        // stops saying `Saved in this browser` for content that is not.
         _documentGeneration++;
         _session = _session.updateDocument(updated);
-        unsaved = _recordDocumentSave(updated, outcome);
       });
-      if (unsaved) _report('Your changes could not be saved in this browser.');
+      final receipt = await store.requestDocumentsWrite();
+      if (!mounted) return;
+      if (_unsavedUnderOn(receipt)) {
+        _report('Your changes could not be saved in this browser.');
+      }
     } finally {
       _endIntake(operation);
     }

@@ -124,7 +124,9 @@ class SettingsScreen extends StatelessWidget {
                             const SizedBox(height: 18),
                             ActionCard(
                               icon: Icons.delete_outline_rounded,
-                              label: 'Remove saved document',
+                              label: retention.savedDocumentCount > 1
+                                  ? 'Remove saved documents'
+                                  : 'Remove saved document',
                               detail:
                                   retention.documentLabel ?? 'Saved document',
                               palette: palette,
@@ -220,8 +222,8 @@ class _KeepForNextTime extends StatelessWidget {
                       'to store data'
                 : !state.keepForNextTime && state.offPolicyResidue
                 ? 'Unavailable until saved reading data is removed'
-                : 'Store this document and your reading place in this browser '
-                      'so you can continue after reopening the app.',
+                : 'Store your open documents and your reading places in this '
+                      'browser so you can continue after reopening the app.',
             style: TextStyle(fontSize: 12.5, height: 1.4, color: palette.muted),
           ),
         ),

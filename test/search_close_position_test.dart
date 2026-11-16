@@ -640,9 +640,7 @@ void main() {
     int? storedSection() {
       final raw = backend.data[Store.positionKey];
       if (raw == null) return null;
-      final position = ReadingPosition.fromJson(
-        jsonDecode(raw) as Map<String, dynamic>,
-      );
+      final position = storedActivePosition(raw)!;
       return sectionOf(position.blockIndex);
     }
 
@@ -651,9 +649,7 @@ void main() {
     int? storedBlock() {
       final raw = backend.data[Store.positionKey];
       if (raw == null) return null;
-      return ReadingPosition.fromJson(
-        jsonDecode(raw) as Map<String, dynamic>,
-      ).blockIndex;
+      return storedActivePosition(raw)!.blockIndex;
     }
 
     setUp(() => backend = FakeBackend());

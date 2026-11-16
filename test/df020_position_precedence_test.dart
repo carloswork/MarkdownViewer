@@ -56,9 +56,8 @@ ReaderScreen reader(WidgetTester tester) =>
 int? storedBlock(FakeBackend backend) {
   final raw = backend.data[Store.positionKey];
   if (raw == null) return null;
-  return ReadingPosition.fromJson(
-    jsonDecode(raw) as Map<String, dynamic>,
-  ).blockIndex;
+  // Either stored shape: the seeded v1.6.1 object, or a DF-020 envelope.
+  return storedActivePosition(raw)?.blockIndex;
 }
 
 /// Scrolls the reader and waits out the position debounce, so the place is
@@ -239,11 +238,12 @@ void main() {
       tester.view.physicalSize = const Size(800, 600);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.reset);
+      // An older stored place for A that the session has moved past. A reader
+      // that consulted storage would land here. Seeded before the store opens,
+      // as stored data is.
+      backend.data[Store.positionKey] = jsonEncode(at('a', 3).toJson());
       await store.init(backend: backend);
       store.applyResolvedPolicy(RetentionPolicy.on);
-      // An older stored place for A that the session has moved past. A reader
-      // that consulted storage would land here.
-      backend.data[Store.positionKey] = jsonEncode(at('a', 3).toJson());
 
       await tester.pumpWidget(
         _Host(
@@ -385,14 +385,31 @@ class _HostState extends State<_Host> {
 
   void close(String id) => setState(() => session = session.close(id).session);
 
-  // The same rule as `_MarkdownViewerAppState._onPositionReported`.
+  // The same rule as `_MarkdownViewerAppState._onPositionReported`, with the
+  // session registered as the store's retained state, as the app registers it.
   void _onPositionReported(ReadingPosition position) {
     if (!session.contains(position.documentId)) {
       reportsIgnored++;
       return;
     }
-    session = session.recordPosition(position);
-    unawaited(store.savePosition(position));
+    final next = session.recordPosition(position);
+    if (identical(next, session)) return;
+    session = next;
+    unawaited(store.requestReadingStateWrite());
+  }
+
+  RetainedSnapshot _snapshot() => RetainedSnapshot(
+    documents: session.documents,
+    activeId: session.activeId,
+    positions: session.positions,
+    documentsRevision: session.documentsRevision,
+    readingStateRevision: session.readingStateRevision,
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    store.registerRetainedSource(_snapshot);
   }
 
   @override

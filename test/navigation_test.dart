@@ -35,6 +35,8 @@ void main() {
   // the test before it.
   setUp(() async {
     await store.init(backend: MemoryBackend());
+    // DF-020 (D-13): presence is read asynchronously; startup does this.
+    await store.refreshContentPresence();
   });
 
   Widget host(Widget child) => MaterialApp(home: child);
@@ -1235,7 +1237,9 @@ void main() {
       );
 
       expect(writePath, contains('copyWith(scriptPreference:'));
-      expect(writePath, contains('store.saveDocument'));
+      // DF-020 §5.3: the store's writers capture the session; the
+      // single-document `saveDocument` no longer exists.
+      expect(writePath, contains('store.requestDocumentsWrite'));
       expect(writePath, contains('setState'));
       expect(
         writePath,

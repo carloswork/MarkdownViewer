@@ -650,9 +650,7 @@ void main() {
     int? storedBlock() {
       final raw = backend.data[Store.positionKey];
       if (raw == null) return null;
-      return ReadingPosition.fromJson(
-        jsonDecode(raw) as Map<String, dynamic>,
-      ).blockIndex;
+      return storedActivePosition(raw)!.blockIndex;
     }
 
     Future<void> settleStore(WidgetTester tester) async {

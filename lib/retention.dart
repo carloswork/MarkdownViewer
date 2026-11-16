@@ -54,12 +54,48 @@ enum WriteOutcome {
   /// No durable storage is open at all - Private Browsing being the realistic
   /// case. Nothing was written and nothing can be.
   unavailable,
+
+  /// Issued, but whether it landed is unknown: its bounded wait expired, or
+  /// the storage outcome could not be observed. It may still land. Never
+  /// reported as saved, and never as failed.
+  indeterminate,
+
+  /// Not attempted yet, because something it depends on did not confirm: a
+  /// reading state is never written ahead of the document set it describes.
+  deferred,
 }
 
 extension WriteOutcomeX on WriteOutcome {
   /// True only for a write that is known to have landed. Every other outcome,
   /// including the two benign ones, must not be described as stored.
   bool get isConfirmed => this == WriteOutcome.saved;
+}
+
+/// What one content write established (§5.3).
+///
+/// [revision] is the session revision the write *captured*, so a write is never
+/// credited with a change made after its snapshot was taken. [exact] is true
+/// only when what was written is that snapshot unchanged.
+class WriteReceipt {
+  const WriteReceipt({
+    required this.key,
+    required this.outcome,
+    required this.revision,
+    required this.exact,
+  });
+
+  final String key;
+  final WriteOutcome outcome;
+  final int revision;
+  final bool exact;
+
+  /// Saved, and saved exactly as captured.
+  bool get confirmed => outcome == WriteOutcome.saved && exact;
+
+  /// The outcome as a plain [WriteOutcome], with an inexact save reported as
+  /// not confirmed rather than as saved.
+  WriteOutcome get reported =>
+      outcome == WriteOutcome.saved && !exact ? WriteOutcome.failed : outcome;
 }
 
 /// Outcome of a two-key removal, verified after the settlement boundary.
@@ -243,6 +279,9 @@ class RetentionTransitionResult {
 
   bool get documentConfirmed => documentOutcome?.isConfirmed ?? false;
 
+  /// The reading state is confirmed, or there was none to write.
+  bool get positionConfirmed => positionOutcome?.isConfirmed ?? true;
+
   /// Whether the removal side is proven complete.
   bool get contentConfirmedAbsent => cleanup?.isConfirmedAbsent ?? false;
 
@@ -256,7 +295,8 @@ class RetentionTransitionResult {
       requested == RetentionPolicy.on &&
       !blockedByOffPolicyData &&
       preferenceConfirmed &&
-      documentConfirmed;
+      documentConfirmed &&
+      positionConfirmed;
 
   /// The combined claim a disable is allowed to make.
   ///
@@ -354,8 +394,13 @@ class RetentionHomeState {
     this.offPolicyResidue = false,
     this.storageAvailable = true,
     this.documentLabel,
+    this.savedDocumentCount = 1,
     this.busy = false,
   });
+
+  /// How many documents a `Remove saved documents` would remove: every open
+  /// document, when they are this session's saved state.
+  final int savedDocumentCount;
 
   /// The position of the `Keep for next time` control.
   final bool keepForNextTime;
@@ -424,6 +469,9 @@ class RetentionController {
 
   RetentionPolicy get effectivePolicy => _store.effectivePolicy;
 
+  /// The store this controller drives. Test seam only.
+  RetentionStore get debugStore => _store;
+
   /// Resolves the effective policy for this page lifetime and, when the stored
   /// content is off-policy, attempts to remove it before anything can reach it.
   ///
@@ -432,6 +480,7 @@ class RetentionController {
   /// that could expose a retained document is constructible.
   Future<StartupResolution> resolveStartup() async {
     final load = _store.loadSettingsResult();
+    await _store.refreshContentPresence();
 
     // Fail safe. An unreadable settings record resolves to OFF, so a profile
     // whose preference cannot be read never retains content by accident.
@@ -474,14 +523,11 @@ class RetentionController {
   /// [document] and [position] are the current in-memory reading state, which
   /// is what an enable is allowed to retain. Nothing that was already on disk
   /// under an earlier policy can be adopted by this transition.
-  Future<RetentionTransitionResult> enable({
-    required Settings current,
-    MarkdownDocument? document,
-    ReadingPosition? position,
-  }) async {
+  Future<RetentionTransitionResult> enable({required Settings current}) async {
     // 1-2. Interlock. Any unresolved off-policy data must be gone before ON can
     // be persisted, otherwise enabling retention would silently reclassify data
     // the user never chose to keep.
+    await _store.refreshContentPresence();
     if (offPolicyDataUnresolved ||
         _store.rawContentPresence() != RawKeyPresence.absent) {
       final retry = await _store.removeRetainedContent();
@@ -514,13 +560,13 @@ class RetentionController {
     // saves because the store refuses content writes under OFF by design.
     _store.applyResolvedPolicy(RetentionPolicy.on);
 
+    // The open documents and the reading state are written through the two
+    // ordinary writers, which capture the session when they run (§5.4).
     WriteOutcome? documentOutcome;
     WriteOutcome? positionOutcome;
-    if (document != null) {
-      documentOutcome = await _store.saveDocument(document);
-      if (position != null && position.documentId == document.id) {
-        positionOutcome = await _store.savePosition(position);
-      }
+    if (_store.hasContentToRetain) {
+      documentOutcome = (await _store.requestDocumentsWrite()).reported;
+      positionOutcome = (await _store.requestReadingStateWrite()).reported;
     }
 
     // 6-7. Report the parts separately; the combined claim is derived, not
@@ -568,9 +614,17 @@ class RetentionController {
   /// further content write for that document, which is what makes the verified
   /// absence hold rather than being undone a moment later by the reader's
   /// `dispose()` position flush.
-  Future<CleanupOutcome> removeSavedDocument({String? documentId}) async {
+  ///
+  /// With several documents open, every one of them is saved under ON, so
+  /// every one is suppressed and the caller closes them all on verified
+  /// absence (D-10).
+  Future<CleanupOutcome> removeSavedDocument({
+    String? documentId,
+    Iterable<String> documentIds = const [],
+  }) async {
     final cleanup = await _store.removeRetainedContent(
       suppressDocumentId: documentId,
+      suppressDocumentIds: documentIds,
     );
     if (!cleanup.isConfirmedAbsent) {
       // Data that could not be removed is off-policy for any later enable, even
@@ -616,9 +670,18 @@ abstract class RetentionStore {
 
   RawKeyPresence rawContentPresence();
 
-  Future<WriteOutcome> saveDocument(MarkdownDocument document);
+  /// Re-reads content presence from storage, after everything queued.
+  Future<void> refreshContentPresence();
 
-  Future<WriteOutcome> savePosition(ReadingPosition position);
+  /// Whether the app currently has open documents a write would retain.
+  bool get hasContentToRetain;
 
-  Future<CleanupOutcome> removeRetainedContent({String? suppressDocumentId});
+  Future<WriteReceipt> requestDocumentsWrite();
+
+  Future<WriteReceipt> requestReadingStateWrite();
+
+  Future<CleanupOutcome> removeRetainedContent({
+    String? suppressDocumentId,
+    Iterable<String> suppressDocumentIds,
+  });
 }

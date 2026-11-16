@@ -8,6 +8,8 @@ import 'package:markdown_viewer/models.dart';
 import 'package:markdown_viewer/retention.dart';
 import 'package:markdown_viewer/store.dart';
 
+import 'support/fake_storage.dart';
+
 /// Exercises the real Store against a real Hive box on disk.
 ///
 /// On the VM that box is a file; in the browser the same code lands in
@@ -16,6 +18,14 @@ import 'package:markdown_viewer/store.dart';
 /// during validation, not here.
 void main() {
   late Directory tempDir;
+
+  // DF-020 (D-13): document content goes through the storage contract, whose
+  // only real implementation is the browser's IndexedDB; native builds keep
+  // content in memory. Settings stay on real Hive. So these tests run settings
+  // against a real Hive box and content against a contract-conforming memory
+  // backend.
+  late MemoryBackend content;
+  late HiveSettingsBackend settings;
 
   setUpAll(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
@@ -28,7 +38,11 @@ void main() {
           (call) async => tempDir.path,
         );
 
-    await store.init();
+    await Hive.initFlutter();
+    settings = HiveSettingsBackend(await Hive.openBox<String>(Store.boxName));
+    content = MemoryBackend();
+    await store.init(backend: content, settings: settings);
+    await store.refreshContentPresence();
   });
 
   setUp(() async {
@@ -290,8 +304,12 @@ void main() {
     // the point is that `loadDocument` returning null must not be read as
     // "nothing stored", or the data would be unreachable and unremovable.
     await store.saveDocument(MarkdownDocument.fromSource('# Doc'));
-    final backend = HiveStorageBackend(Hive.box<String>(Store.boxName));
-    await backend.write(Store.documentKey, 'not json at all');
+    await content.write(Store.documentKey, 'not json at all');
+    // The store answers from committed reads (C2), so the corruption is seen
+    // the next time the key is read: at the next start, simulated here.
+    await store.init(backend: content, settings: settings);
+    await store.refreshContentPresence();
+    store.applyResolvedPolicy(RetentionPolicy.on);
 
     expect(store.loadDocument(), isNull);
     expect(store.rawKeyPresence(Store.documentKey), RawKeyPresence.present);
