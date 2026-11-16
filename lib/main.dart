@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import 'document_session.dart';
 import 'file_loader.dart';
 import 'file_drop.dart';
 import 'han_script.dart';
@@ -65,7 +66,71 @@ class MarkdownViewerApp extends StatefulWidget {
 
 class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   late Settings _settings = widget.initialSettings;
-  late MarkdownDocument? _document = widget.initialDocument;
+
+  /// Issues the ID of every document created in this page lifetime.
+  final DocumentIdAllocator _ids = DocumentIdAllocator();
+
+  /// The open documents, the active one, and where each was read to.
+  ///
+  /// Replaced, never mutated: every change is a new value from one of the
+  /// session's operations. The app still opens one document at a time, so the
+  /// session holds at most one.
+  late DocumentSession _session = _initialSession();
+
+  /// The document being read. Single-document code reads this, unchanged.
+  MarkdownDocument? get _document => _session.active;
+
+  /// Where the active document was read to in this page lifetime, whether or
+  /// not it was stored.
+  ///
+  /// Under OFF nothing durable is written, and §18.2 still requires returning
+  /// Home and continuing to land where the reader was. Under ON it is still
+  /// this, not the stored copy, that the reader resumes from: the stored copy
+  /// can only be the same or older.
+  ReadingPosition? get _sessionPosition {
+    final document = _document;
+    return document == null ? null : _session.positions[document.id];
+  }
+
+  /// The session this page lifetime starts with.
+  ///
+  /// A document restored from storage brings its stored position, read once
+  /// here and only under a confirmed ON policy. From then on positions flow one
+  /// way, from the session to storage, and storage is never consulted again.
+  DocumentSession _initialSession() {
+    final document = widget.initialDocument;
+    if (document == null) return DocumentSession.empty;
+    _ids.reserve([document.id]);
+    final position = store.effectivePolicy == RetentionPolicy.on
+        ? store.loadPosition(document.id)
+        : null;
+    return DocumentSession.restored(
+      documents: [document],
+      activeId: document.id,
+      positions: {document.id: ?position},
+    );
+  }
+
+  /// A new document's ID: unused by any open document, and never one restored
+  /// at startup.
+  String _newDocumentId() => _ids.allocate(_session.ids);
+
+  /// The reader reported where reading reached.
+  ///
+  /// Recorded against the reporting document's ID. A report for a document
+  /// that is no longer open - a replaced document's reader reports once more
+  /// as it is disposed, after the replacement - is ignored, and nothing is
+  /// stored for it. Otherwise the place is offered to the store, whose
+  /// retention gate decides whether it is kept.
+  ///
+  /// No `setState`: the reader reads its position once, at mount, so nothing
+  /// on screen depends on this, and the disposal report arrives while the tree
+  /// is being finalized, when a rebuild cannot be requested.
+  void _onPositionReported(ReadingPosition position) {
+    if (!_session.contains(position.documentId)) return;
+    _session = _session.recordPosition(position);
+    unawaited(store.savePosition(position));
+  }
 
   /// Which of the two screens is showing.
   ///
@@ -81,14 +146,6 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   /// Whether Home is showing Settings. Set only from Home, and Settings only
   /// ever returns there, so it has no meaning outside the Home route.
   bool _atSettings = false;
-
-  /// Where reading reached in this page lifetime, whether or not it was stored.
-  ///
-  /// Under OFF nothing durable is written, and §18.2 still requires returning
-  /// Home and continuing to land where the reader was. This is that memory, and
-  /// it is deliberately not persistence: a refresh loses it, which is exactly
-  /// what OFF promises.
-  ReadingPosition? _sessionPosition;
 
   /// The document this session last *confirmed* stored, if any.
   ///
@@ -506,10 +563,9 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
       _busy = false;
       if (outcome.isConfirmedAbsent) {
         // The user chose removal, not merely a change of preference, so the
-        // document goes from this session too (§20.3).
+        // document and its reading place go from this session too (§20.3).
         _documentGeneration++;
-        _document = null;
-        _sessionPosition = null;
+        _session = _session.close(current.id).session;
         _storedDocumentId = null;
         _atHome = true;
         _alerts = const [];
@@ -616,7 +672,7 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
     var unsaved = false;
     setState(() {
       _documentGeneration++;
-      _document = updated;
+      _session = _session.updateDocument(updated);
       _busy = false;
       unsaved = _recordDocumentSave(updated, outcome);
     });
@@ -706,17 +762,21 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
     }
     setState(() {
       _documentGeneration++;
-      _document = document;
+      // Still one document at a time: the new one takes the open document's
+      // place, and that document's reading place goes with it.
+      final replaced = _document;
+      _session = replaced == null
+          ? _session.commitBatch(adds: [document], activeId: document.id)
+          : _session.commitBatch(
+              replacements: {replaced.id: document},
+              activeId: document.id,
+            );
       if (saved.isConfirmed) {
         _storedDocumentId = document.id;
         _storedDocumentCurrent = true;
       } else if (cleanup.isConfirmedAbsent) {
         _storedDocumentId = null;
       }
-      // The outgoing document's reading place, which does not belong to this
-      // one. `loadPosition` filters by id as well, so this is belt and braces
-      // for the in-memory half.
-      _sessionPosition = null;
       _atHome = false;
       // A load supersedes whatever the last retention operation reported. The
       // exception is a preference that still cannot be written: that describes
@@ -742,7 +802,9 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
       if (!_validIntake(operation) || !context.mounted) return;
       final source = await _intakeModal(() => showMarkdownEditor(context));
       if (source == null || !_beginOpening(operation)) return;
-      await _openDocument(MarkdownDocument.fromSource(source));
+      await _openDocument(
+        MarkdownDocument.fromSource(source, id: _newDocumentId()),
+      );
     } finally {
       _endIntake(operation);
     }
@@ -773,7 +835,11 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
       if (!await _intakeModal(() => _confirmReplace(context))) return;
       if (!context.mounted || !_beginOpening(operation)) return;
       await _openDocument(
-        MarkdownDocument.fromSource(file.contents, sourceName: file.name),
+        MarkdownDocument.fromSource(
+          file.contents,
+          id: _newDocumentId(),
+          sourceName: file.name,
+        ),
       );
     } on UnsupportedFileException catch (error) {
       if (_validIntake(operation)) {
@@ -821,7 +887,7 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
         // reading their edit in this session. What changes is the claim - Home
         // stops saying `Saved in this browser` for content that is not.
         _documentGeneration++;
-        _document = updated;
+        _session = _session.updateDocument(updated);
         unsaved = _recordDocumentSave(updated, outcome);
       });
       if (unsaved) _report('Your changes could not be saved in this browser.');
@@ -902,7 +968,7 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
             // confirmation and error handling all live in _loadFromFile.
             onLoadFile: () => _loadFromFile(context),
             onReturnHome: _returnHome,
-            onPositionChanged: (position) => _sessionPosition = position,
+            onPositionChanged: _onPositionReported,
             sessionPosition: _sessionPosition,
           );
         },
