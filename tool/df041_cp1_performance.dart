@@ -14,7 +14,7 @@ Future<void> main() async {
   // Proves the progress state reached a frame before any retained measurement.
   await WidgetsBinding.instance.endOfFrame;
   final current = await html.HttpRequest.getString('df026-long.md');
-  final stress = _stressFixture();
+  final stress = df041StressFixture();
 
   final warmCurrent = DocumentSearchIndex.build(current);
   warmCurrent.search('section', renderedBlockCount: warmCurrent.blocks.length);
@@ -123,7 +123,7 @@ class _BenchmarkStatus extends StatelessWidget {
   );
 }
 
-String _stressFixture() {
+String df041StressFixture() {
   final buffer = StringBuffer();
   for (var index = 0; index < 10000; index++) {
     final ordinal = index.toString().padLeft(5, '0');

@@ -150,6 +150,15 @@ class FakeBackend extends MemoryBackend {
   /// deterministically instead of relying on timing.
   Completer<void> stall(String key) => _stalls[key] = Completer<void>();
 
+  /// Holds the operation on [key] that comes after the next [skip] ones.
+  Completer<void> stallAfter(String key, int skip) {
+    final gate = Completer<void>();
+    _laterStalls[key] = (skip, gate);
+    return gate;
+  }
+
+  final Map<String, (int, Completer<void>)> _laterStalls = {};
+
   /// The settings seam: synchronous, throws when presence cannot be read.
   @override
   String? readSetting(String key) {
@@ -251,6 +260,15 @@ class FakeBackend extends MemoryBackend {
   Future<void> _awaitStall(String key) async {
     final stall = _stalls.remove(key);
     if (stall != null) await stall.future;
+    final later = _laterStalls[key];
+    if (later != null) {
+      if (later.$1 == 0) {
+        _laterStalls.remove(key);
+        await later.$2.future;
+      } else {
+        _laterStalls[key] = (later.$1 - 1, later.$2);
+      }
+    }
   }
 }
 

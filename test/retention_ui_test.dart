@@ -736,7 +736,9 @@ void main() {
       seedRetained();
       await launch(tester);
 
-      // Replace the retained document with a pasted one.
+      // DF-020 D-4: Paste adds a document beside the retained one rather than
+      // replacing it. Each document keeps its own reading place, and the new
+      // one never inherits the retained one's.
       await pasteDocument(tester, source: '# Replacement\n\nBody.');
       await returnHome(tester);
       await store.settlePendingOperations();
@@ -745,9 +747,14 @@ void main() {
       expect(stored, isNotNull);
       expect(stored!.id, isNot('doc-1'), reason: 'the new document is stored');
       expect(
-        store.loadPosition('doc-1'),
-        isNull,
-        reason: 'the outgoing document\'s reading place does not survive it',
+        store.loadRetained()!.documents.map((d) => d.id),
+        ['doc-1', stored.id],
+        reason: 'the retained document stays open and saved beside it',
+      );
+      expect(
+        store.loadPosition('doc-1')?.blockIndex,
+        3,
+        reason: 'the retained document keeps its own reading place',
       );
       // A position for the *new* document is expected and correct - the reader
       // records one as soon as it is scrolled or left. The requirement is that
@@ -781,18 +788,20 @@ void main() {
         findsOneWidget,
       );
 
+      // DF-020 D-4: Paste adds, so nothing was removed. The stored set is the
+      // earlier one, without the new document, and Home must not claim the
+      // open documents are saved.
       await store.settlePendingOperations();
       expect(
-        store.rawKeyPresence(Store.documentKey),
-        RawKeyPresence.absent,
-        reason:
-            'the replacement did not land, and the outgoing document was '
-            'still removed - so nothing is retained and nothing claims to be',
+        store.loadRetained()!.documents.map((d) => d.id),
+        ['doc-1'],
+        reason: 'the new document did not save',
       );
+      await returnHome(tester);
+      expect(find.text('Saved in this browser'), findsNothing);
       expect(
-        store.loadPosition('doc-1'),
-        isNull,
-        reason: 'the outgoing document keeps nothing behind either',
+        find.text('Latest changes not saved in this browser'),
+        findsOneWidget,
       );
     });
   });

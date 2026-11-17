@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
 import 'document_session.dart';
+import 'document_tabs.dart';
 import 'file_loader.dart';
 import 'file_drop.dart';
 import 'han_script.dart';
@@ -228,6 +229,7 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   @override
   void initState() {
     super.initState();
+    if (kDf020Timing) Df020Timing._app = this;
     store.registerRetainedSource(_retainedSnapshot);
     store.savedState.addListener(_savedStateChanged);
     _dropLease = widget.fileDropMount(
@@ -834,16 +836,135 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
     }
   }
 
+  /// Adds [document] to the open set as the active document (D-4).
+  Future<void> _addDocument(MarkdownDocument document) async {
+    setState(() {
+      _documentGeneration++;
+      _session = _session.commitBatch(adds: [document], activeId: document.id);
+      _atHome = false;
+      _alerts = _alerts
+          .where((a) => a == RetentionAlert.preferenceMayNotPersist)
+          .toList();
+    });
+    if (kDf020Timing) Df020Timing._applied(document.id);
+    final saved = store.requestDocumentsWrite();
+    unawaited(store.requestReadingStateWrite());
+    final receipt = await saved;
+    if (!mounted) return;
+    // Under ON the user has been told their documents are kept (S09-11).
+    if (_unsavedUnderOn(receipt)) {
+      _report('This document could not be saved in this browser.');
+    }
+  }
+
+  // --- Switching and closing (D-3, D-6, D-11) ---------------------------------
+
+  /// Whether the tabs, the switcher and every close control are inert: a load,
+  /// close or removal is being verified (S10-08).
+  bool get _navigationInert => _busy || _intake != null;
+
+  /// Makes [id] the document being read. Never waits on storage: the switch
+  /// is in memory, and the reading-state write that records it follows.
+  void _activateDocument(String id) {
+    if (_navigationInert || !_session.contains(id) || _session.activeId == id) {
+      return;
+    }
+    setState(() {
+      _routeGeneration++;
+      _session = _session.activate(id);
+    });
+    if (kDf020Timing) Df020Timing._applied(id);
+    unawaited(store.requestReadingStateWrite());
+  }
+
+  /// Closes [id] under D-11.
+  ///
+  /// Under ON the document closes only after its saved copy is verified gone
+  /// (D-6, §5.5): the session change runs inside the removal. If it cannot be
+  /// verified the document stays open, nothing claims it was removed, and the
+  /// open set is written again. Under OFF nothing is stored for it, but the
+  /// whole-store removal still runs, as for a replacement, so residue keeps
+  /// being cleaned and flagged (§5.4).
+  Future<void> _closeDocument(String id) async {
+    if (_navigationInert || !_session.contains(id)) return;
+    final document = _session.byId(id)!;
+    final next = _session.close(id);
+    setState(() => _busy = true);
+
+    void applyClose() {
+      if (!mounted || !_session.contains(id)) return;
+      setState(() {
+        _documentGeneration++;
+        _routeGeneration++;
+        _session = _session.close(id).session;
+        if (_session.isEmpty) _atHome = true;
+      });
+    }
+
+    if (store.effectivePolicy == RetentionPolicy.on) {
+      final outcome = await store.removeDocuments(
+        {id},
+        successorActiveId: next.successor,
+        onVerified: applyClose,
+      );
+      // Verified or not, the open set is written: after a verified close it
+      // saves the new set; after a failed one it restores the old.
+      final documents = store.requestDocumentsWrite();
+      final reading = store.requestReadingStateWrite();
+      // Both receipts settle before anything is reported or released (§5.5):
+      // awaiting them separately, so a failed documents write cannot skip the
+      // wait for the reading state.
+      final documentsReceipt = await documents;
+      final readingReceipt = await reading;
+      final restored = documentsReceipt.confirmed && readingReceipt.confirmed;
+      if (!mounted) return;
+      setState(() => _busy = false);
+      _persistDeferredSettings();
+      if (outcome != RemovalOutcome.verified) {
+        _report(
+          '"${document.identityLabel}" is still open. Its removal from this '
+          'browser could not be confirmed.'
+          '${restored ? '' : ' Saved documents in this browser may be out of date.'}',
+        );
+      }
+      return;
+    }
+
+    final cleanup = await store.removeRetainedContent(suppressDocumentId: id);
+    if (!mounted) return;
+    if (store.isAvailable && !cleanup.isConfirmedAbsent) {
+      store.setOffPolicyDataUnresolved(true);
+    }
+    applyClose();
+    setState(() => _busy = false);
+    _persistDeferredSettings();
+  }
+
+  Future<void> _showDocuments(BuildContext context) async {
+    if (_navigationInert) return;
+    final action = await showDocumentsSheet(
+      context,
+      documents: _session.documents,
+      activeId: _session.activeId,
+    );
+    if (!mounted || action == null) return;
+    if (action.close) {
+      await _closeDocument(action.id);
+    } else {
+      _activateDocument(action.id);
+    }
+  }
+
   Future<void> _pasteNewDocument(BuildContext context) async {
     final operation = _beginIntake();
     if (operation == null) return;
     try {
-      // Preserve paste's confirmation-before-editor ordering.
-      if (!await _intakeModal(() => _confirmReplace(context))) return;
-      if (!_validIntake(operation) || !context.mounted) return;
+      // Paste adds a document; it never replaces one (D-4), so there is
+      // nothing to confirm. A pasted document has no filename, so it can never
+      // match another (M2).
       final source = await _intakeModal(() => showMarkdownEditor(context));
       if (source == null || !_beginOpening(operation)) return;
-      await _openDocument(
+      await _addDocument(
         MarkdownDocument.fromSource(source, id: _newDocumentId()),
       );
     } finally {
@@ -986,6 +1107,7 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
             }
             return HomeScreen(
               document: document,
+              otherDocumentCount: _session.documents.length - 1,
               retention: _retentionHomeState,
               onContinue: _continueReading,
               onPaste: () => _pasteNewDocument(context),
@@ -995,28 +1117,107 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
             );
           }
 
-          return ReaderScreen(
-            // Remounting on a document or edit change gives the list a fresh
-            // initialScrollIndex, which is the only point it is read.
-            key: ValueKey(
-              '${document.id}:${document.updatedAt.microsecondsSinceEpoch}',
-            ),
-            document: document,
-            settings: _settings,
-            onSettingsChanged: _onSettingsChanged,
-            onScriptPreferenceChanged: _setScriptPreference,
-            onEdit: () => _editDocument(context),
-            // The same workflow Home uses - picker, validation, replacement
-            // confirmation and error handling all live in _loadFromFile.
-            onLoadFile: () => _loadFromFile(context),
-            onReturnHome: _returnHome,
-            onPositionChanged: _onPositionReported,
-            sessionPosition: _sessionPosition,
+          // The Reader always sits at the same place in the tree: a Column
+          // whose first slot is the tab bar or nothing. Showing or hiding the
+          // bar, or crossing the width threshold, never moves the Reader, so
+          // its State - and the reading position - survive (§4.4).
+          return LayoutBuilder(
+            builder: (context, constraints) {
+              final wide = constraints.maxWidth >= kDocumentTabsBreakpoint;
+              final several = _session.documents.length >= 2;
+              final tabs = wide && several;
+              return ColoredBox(
+                color: ReaderPalette.of(context).background,
+                child: Column(
+                  children: [
+                    if (tabs)
+                      DocumentTabBar(
+                        documents: _session.documents,
+                        activeId: _session.activeId,
+                        busy: _navigationInert,
+                        onSelect: _activateDocument,
+                        onClose: _closeDocument,
+                      )
+                    else
+                      const SizedBox.shrink(),
+                    Expanded(
+                      child: MediaQuery.removePadding(
+                        context: context,
+                        // The bar takes the top inset when it is shown.
+                        removeTop: tabs,
+                        child: ReaderScreen(
+                          // Remounting on a document or edit change gives the
+                          // list a fresh initialScrollIndex, which is the only
+                          // point it is read. A switch is a remount too.
+                          key: ValueKey(
+                            '${document.id}:'
+                            '${document.updatedAt.microsecondsSinceEpoch}',
+                          ),
+                          document: document,
+                          settings: _settings,
+                          onSettingsChanged: _onSettingsChanged,
+                          onScriptPreferenceChanged: _setScriptPreference,
+                          onEdit: () => _editDocument(context),
+                          // The same workflow Home uses - picker, validation,
+                          // replacement confirmation and error handling all
+                          // live in _loadFromFile.
+                          onLoadFile: () => _loadFromFile(context),
+                          onReturnHome: _returnHome,
+                          onPositionChanged: _onPositionReported,
+                          sessionPosition: _sessionPosition,
+                          onCloseDocument: () => _closeDocument(document.id),
+                          onShowDocuments: !wide && several
+                              ? () => _showDocuments(context)
+                              : null,
+                          documentCount: _session.documents.length,
+                          onFirstFrame: kDf020Timing
+                              ? () => Df020Timing._shown(document.id)
+                              : null,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
           );
         },
       ),
     );
   }
+}
+
+/// DF-020 V-17: the switch-latency seam, compiled in only with
+/// `--dart-define=DF020_TIMING=true`. In any other build every use is behind
+/// this constant and is removed by the compiler.
+const bool kDf020Timing = bool.fromEnvironment('DF020_TIMING');
+
+/// Drives the real app's open and switch paths for the latency harness and
+/// reports when each was applied and when its Reader first painted.
+abstract final class Df020Timing {
+  static _MarkdownViewerAppState? _app;
+
+  /// Called with `('df020-timing:applied' | 'df020-timing:shown', id)`.
+  static void Function(String phase, String id)? onMark;
+
+  static void _applied(String id) => onMark?.call('df020-timing:applied', id);
+  static void _shown(String id) => onMark?.call('df020-timing:shown', id);
+
+  /// Opens a document through the same commit the intake paths use.
+  static String open(String name, String text) {
+    final app = _app!;
+    final document = MarkdownDocument.fromSource(
+      text,
+      id: app._newDocumentId(),
+      sourceName: name,
+    );
+    unawaited(app._addDocument(document));
+    return document.id;
+  }
+
+  static void activate(String id) => _app!._activateDocument(id);
+
+  static Future<void> close(String id) => _app!._closeDocument(id);
 }
 
 class _IntakeOperation {

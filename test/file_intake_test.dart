@@ -300,16 +300,22 @@ void main() {
     },
   );
   testWidgets(
-    'paste confirms before editor and cancelled confirmation releases guard',
+    // DF-020 D-4: Paste adds a document and never replaces one, so it asks
+    // nothing before the editor. What this guards is unchanged: while Paste is
+    // in progress intake is held, and abandoning it releases the guard.
+    'paste opens the editor without a replacement question, and a cancelled '
+    'paste releases the guard',
     (tester) async {
       await launch(tester, current: old);
       home(tester).onPaste();
       await tick(tester);
-      expect(find.text('Replace current document?'), findsOneWidget);
-      expect(find.byType(TextField), findsNothing);
-      await tester.tap(find.text('Cancel'));
+      expect(find.text('Replace current document?'), findsNothing);
+      expect(find.byType(TextField), findsOneWidget);
+      expect(port.eligible(), isFalse);
+      await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
       await tick(tester);
       expect(port.eligible(), isTrue);
+      expect(home(tester).document, old);
     },
   );
   testWidgets(

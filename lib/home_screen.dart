@@ -31,10 +31,14 @@ class HomeScreen extends StatelessWidget {
     required this.onLoadFile,
     required this.onOpenSettings,
     required this.onRemoveRetainedData,
+    this.otherDocumentCount = 0,
   });
 
   /// The current document, in memory or retained. Null on an empty Home.
   final MarkdownDocument? document;
+
+  /// How many other documents are open besides [document] (S08-01, S09-01).
+  final int otherDocumentCount;
 
   /// Everything Home must show about retention, already resolved.
   final RetentionHomeState retention;
@@ -120,7 +124,11 @@ class HomeScreen extends StatelessWidget {
                       ActionCard(
                         icon: Icons.menu_book_rounded,
                         label: 'Continue reading',
-                        detail: current.identityLabel,
+                        detail: otherDocumentCount == 0
+                            ? current.identityLabel
+                            : '${current.identityLabel} and '
+                                  '$otherDocumentCount other '
+                                  '${otherDocumentCount == 1 ? 'document' : 'documents'}',
                         // The distinction the whole feature turns on. A
                         // current-session document is real and is gone on
                         // refresh; only a retained one comes back.

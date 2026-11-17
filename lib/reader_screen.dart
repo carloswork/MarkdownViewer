@@ -101,6 +101,10 @@ class ReaderScreen extends StatefulWidget {
     required this.onPositionChanged,
     this.sessionPosition,
     this.onSearchIndexBuilt,
+    this.onCloseDocument,
+    this.onShowDocuments,
+    this.documentCount = 1,
+    this.onFirstFrame,
   });
 
   final MarkdownDocument document;
@@ -140,6 +144,21 @@ class ReaderScreen extends StatefulWidget {
   /// Test/evidence seam for proving lazy construction and resize reuse.
   final VoidCallback? onSearchIndexBuilt;
 
+  /// Closes this document (`Close document`). A navigation seam: the app
+  /// owns closing, its verification and what becomes active (D-11).
+  final VoidCallback? onCloseDocument;
+
+  /// Opens the open-documents switcher, offered only in the narrow layout
+  /// with two or more documents open (M3).
+  final VoidCallback? onShowDocuments;
+
+  /// How many documents are open, for the switcher's entry.
+  final int documentCount;
+
+  /// Measurement seam (DF-020 V-17): called after the frame in which this
+  /// reader first builds.
+  final VoidCallback? onFirstFrame;
+
   @override
   State<ReaderScreen> createState() => _ReaderScreenState();
 }
@@ -175,6 +194,16 @@ class _ReaderScreenState extends State<ReaderScreen>
   /// reading is now, so on such a switch the new list starts from the old
   /// list's live position instead. `_restore` serves only the first list.
   bool? _readerBesidePane;
+
+  /// The Reader's width at its last layout; null before the first.
+  ///
+  /// A width change reflows the blocks, and the list keeps its scroll offset
+  /// in pixels rather than its place in the text, so reading would drift by
+  /// however much the blocks above the top changed height. On a width change
+  /// the top block and the fraction into it are captured from the layout that
+  /// is ending and restored once the new one is in place, so crossing a layout
+  /// threshold or rotating keeps the reading position (DF-020 S10-05).
+  double? _lastLayoutWidth;
 
   bool _controlsVisible = true;
 
@@ -236,6 +265,10 @@ class _ReaderScreenState extends State<ReaderScreen>
         ? session
         : null;
     _positionsListener.itemPositions.addListener(_onPositionsChanged);
+    final firstFrame = widget.onFirstFrame;
+    if (firstFrame != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => firstFrame());
+    }
     _printSurfaceLease = mountPrintSurface(
       widget.document.source,
       script: _resolvedScript,
@@ -495,6 +528,20 @@ class _ReaderScreenState extends State<ReaderScreen>
   }
 
   // --- Navigation -----------------------------------------------------------
+
+  /// See [_lastLayoutWidth]. Reads the place from the layout that is ending,
+  /// during the build that replaces it, and jumps back to it after the frame.
+  void _keepPlaceAcrossReflow() {
+    final place = _topVisiblePosition();
+    if (place == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollController.isAttached) return;
+      _scrollController.jumpTo(
+        index: place.blockIndex.clamp(0, math.max(0, _blocks.length - 1)),
+        alignment: -place.fraction,
+      );
+    });
+  }
 
   void _jumpTo(int blockIndex) {
     if (!_scrollController.isAttached) return;
@@ -1230,6 +1277,10 @@ class _ReaderScreenState extends State<ReaderScreen>
             widget.document.scriptPreference,
             _detectedScript,
           ),
+          documentCount: widget.onShowDocuments == null
+              ? null
+              : widget.documentCount,
+          canClose: widget.onCloseDocument != null,
         ),
       ),
     );
@@ -1264,6 +1315,14 @@ class _ReaderScreenState extends State<ReaderScreen>
         await _waitForMenuToClose(menuKey);
         if (!mounted) return;
         widget.onLoadFile();
+      case _MenuAction.documents:
+        await _waitForMenuToClose(menuKey);
+        if (!mounted) return;
+        widget.onShowDocuments?.call();
+      case _MenuAction.close:
+        await _waitForMenuToClose(menuKey);
+        if (!mounted) return;
+        widget.onCloseDocument?.call();
       case _MenuAction.home:
         await _waitForMenuToClose(menuKey);
         if (!mounted) return;
@@ -1319,6 +1378,13 @@ class _ReaderScreenState extends State<ReaderScreen>
             final besidePane = _searchOpen && usesPane;
             final wasBesidePane = _readerBesidePane;
             _readerBesidePane = besidePane;
+            final lastWidth = _lastLayoutWidth;
+            _lastLayoutWidth = constraints.maxWidth;
+            if (lastWidth != null &&
+                lastWidth != constraints.maxWidth &&
+                wasBesidePane == besidePane) {
+              _keepPlaceAcrossReflow();
+            }
             // §D-6 part (1): a responsive pane/sheet remount (the
             // `wasBesidePane != besidePane` edge — a `usesPane` change or a
             // search open/close at constant `usesPane`) re-reveals the active
@@ -1518,6 +1584,8 @@ enum _MenuAction {
   edit,
   loadFile,
   language,
+  documents,
+  close,
   home,
 }
 
@@ -1528,6 +1596,8 @@ class _ReaderMenu extends StatelessWidget {
     required this.hasToc,
     required this.hasHan,
     required this.languageSubtitle,
+    this.documentCount,
+    this.canClose = false,
   });
 
   final MarkdownDocument document;
@@ -1540,6 +1610,12 @@ class _ReaderMenu extends StatelessWidget {
 
   /// The effective state, shown under the tile.
   final String languageSubtitle;
+
+  /// When set, the narrow `Documents (n)` switcher entry is offered.
+  final int? documentCount;
+
+  /// Whether `Close document` is offered.
+  final bool canClose;
 
   @override
   Widget build(BuildContext context) {
@@ -1658,6 +1734,22 @@ class _ReaderMenu extends StatelessWidget {
                 subtitle: languageSubtitle,
                 palette: palette,
                 onTap: () => Navigator.pop(context, _MenuAction.language),
+              ),
+            // DF-020: after every existing tile, so each keeps its index, and
+            // before `Return to main`, which stays last (UX-3).
+            if (documentCount != null)
+              _MenuTile(
+                icon: Icons.tab_rounded,
+                label: 'Documents ($documentCount)',
+                palette: palette,
+                onTap: () => Navigator.pop(context, _MenuAction.documents),
+              ),
+            if (canClose)
+              _MenuTile(
+                icon: Icons.close_rounded,
+                label: 'Close document',
+                palette: palette,
+                onTap: () => Navigator.pop(context, _MenuAction.close),
               ),
             _MenuTile(
               icon: Icons.home_rounded,
