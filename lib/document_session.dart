@@ -8,6 +8,14 @@ library;
 
 import 'models.dart';
 
+/// The order files are loaded in (D-2): alphabetical by filename, compared
+/// case-insensitively, with code-unit order breaking ties. It is not natural
+/// number ordering, so `10.md` comes before `9.md`.
+int compareFileNames(String a, String b) {
+  final folded = a.toLowerCase().compareTo(b.toLowerCase());
+  return folded != 0 ? folded : a.compareTo(b);
+}
+
 /// An immutable ordered set of documents with an active one and per-document
 /// reading positions.
 ///

@@ -235,10 +235,12 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
     _dropLease = widget.fileDropMount(
       eligible: () => _dropEligible,
       onHover: (_) {},
-      onCandidate: (candidate) {
+      onCandidates: (candidates) {
         final context = _navigatorKey.currentContext;
         if (context != null && _dropEligible) {
-          unawaited(_acquireFile(context, candidate.read, dropped: true));
+          unawaited(
+            _acquireBatch(context, () async => candidates, dropped: true),
+          );
         }
       },
       onRejected: _report,
@@ -746,94 +748,188 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
 
   // --- Document entry -------------------------------------------------------
 
-  /// Lightweight guard before discarding the document currently being read.
-  /// Skipped entirely when there is nothing to lose.
-  Future<bool> _confirmReplace(BuildContext context) async {
-    final current = _document;
-    if (current == null) return true;
-
+  /// Asks before a loaded file replaces the open document with its name (M2).
+  ///
+  /// [offerSameForOthers] shows "Do the same for other documents", which is
+  /// offered only while more confirmations remain (S11-06). Returns null on
+  /// Cancel; otherwise whether the remaining matches are accepted without
+  /// asking.
+  Future<bool?> _confirmReplace(
+    BuildContext context,
+    MarkdownDocument current, {
+    required bool offerSameForOthers,
+  }) async {
+    var sameForOthers = false;
+    final message = Text(
+      '"${current.identityLabel}" and your place in it will be removed '
+      'from this device.',
+    );
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Replace current document?'),
-        content: Text(
-          '"${current.identityLabel}" and your place in it will be removed '
-          'from this device.',
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Replace current document?'),
+          content: offerSameForOthers
+              ? Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    message,
+                    const SizedBox(height: 8),
+                    CheckboxListTile(
+                      value: sameForOthers,
+                      onChanged: (value) =>
+                          setDialogState(() => sameForOthers = value ?? false),
+                      title: const Text('Do the same for other documents'),
+                      controlAffinity: ListTileControlAffinity.leading,
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ],
+                )
+              : message,
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Replace'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Replace'),
-          ),
-        ],
       ),
     );
-    return confirmed ?? false;
+    return confirmed == true ? sameForOthers : null;
   }
 
-  /// Replaces the current document.
+  /// Applies a checked and confirmed batch (§4.5 steps 7 and 8).
   ///
-  /// The removal runs first and unconditionally, including under OFF, so a
-  /// replaced document's stored bytes and its stored position cannot outlive it.
-  /// It also invalidates any content write that was already requested when the
-  /// removal was issued, so an outgoing document's in-flight save cannot land
-  /// behind it.
+  /// [files] are in D-2 order, and [matches] holds, for each, the open
+  /// document with its name, if any. A replacement takes that document's place
+  /// with a new ID, so its reading place goes with the old copy and the new
+  /// copy starts at the top. The first file becomes active.
   ///
-  /// What stops the *new* document from inheriting the old one's position is
-  /// separate and stronger: `Store.loadPosition` returns a stored position only
-  /// when its `documentId` matches. A position write whose debounce fires after
-  /// this removal is a new request rather than a stale one, so the fence does
-  /// not cover it - the identity filter does.
-  Future<void> _openDocument(MarkdownDocument document) async {
-    final outgoing = _document;
-    // Suppressing the outgoing document closes the same hole `Remove saved
-    // document` has: its reader is about to be replaced, and the `dispose()`
-    // position flush that follows is issued after this removal, so the
-    // generation fence would not catch it.
-    final cleanup = await store.removeRetainedContent(
-      suppressDocumentId: outgoing?.id,
-    );
-    if (!mounted) return;
-    // Under OFF anything the removal could not clear is off-policy data, and
-    // the interlock has to know that before any later attempt to turn ON.
-    if (store.effectivePolicy == RetentionPolicy.off &&
-        store.isAvailable &&
-        !cleanup.isConfirmedAbsent) {
-      store.setOffPolicyDataUnresolved(true);
+  /// Under ON, a batch that replaces commits only inside the removal of every
+  /// replaced document's saved copy, once that removal is verified (E-1,
+  /// §5.5). If it is not verified nothing changes: the open set is written
+  /// again and the error makes no removal claim. Under OFF the whole-store
+  /// removal runs first, as a replacement has always done, so residue keeps
+  /// being cleaned and flagged (§5.4); suppressing the replaced IDs closes the
+  /// same hole `Remove saved document` has, for a flush issued behind it.
+  Future<void> _applyBatch(
+    List<LoadedFile> files,
+    List<MarkdownDocument?> matches,
+  ) async {
+    final ids = _ids.allocateBatch(files.length, _session.ids);
+    final adds = <MarkdownDocument>[];
+    final replacements = <String, MarkdownDocument>{};
+    for (var i = 0; i < files.length; i++) {
+      final document = MarkdownDocument.fromSource(
+        files[i].contents,
+        id: ids[i],
+        sourceName: files[i].name,
+      );
+      final match = matches[i];
+      if (match == null) {
+        adds.add(document);
+      } else {
+        replacements[match.id] = document;
+      }
     }
-    setState(() {
-      _documentGeneration++;
-      // Still one document at a time: the new one takes the open document's
-      // place, and that document's reading place goes with it.
-      final replaced = _document;
-      _session = replaced == null
-          ? _session.commitBatch(adds: [document], activeId: document.id)
-          : _session.commitBatch(
-              replacements: {replaced.id: document},
-              activeId: document.id,
-            );
-      _atHome = false;
-      // A load supersedes whatever the last retention operation reported. The
-      // exception is a preference that still cannot be written: that describes
-      // the browser, not the document just replaced.
-      _alerts = _alerts
-          .where((a) => a == RetentionAlert.preferenceMayNotPersist)
-          .toList();
-    });
-    // The writes capture the session that now holds the new document.
+
+    void commit() {
+      if (!mounted || !replacements.keys.every(_session.contains)) return;
+      setState(() {
+        _documentGeneration++;
+        _session = _session.commitBatch(
+          adds: adds,
+          replacements: replacements,
+          activeId: ids.first,
+        );
+        _atHome = false;
+        // A load supersedes whatever the last retention operation reported.
+        // The exception is a preference that still cannot be written: that
+        // describes the browser, not the documents just loaded.
+        _alerts = _alerts
+            .where((a) => a == RetentionAlert.preferenceMayNotPersist)
+            .toList();
+      });
+      if (kDf020Timing) Df020Timing._applied(ids.first);
+    }
+
+    if (replacements.isNotEmpty &&
+        store.effectivePolicy == RetentionPolicy.on) {
+      final outcome = await store.removeDocuments(
+        replacements.keys.toSet(),
+        replacing: true,
+        onVerified: commit,
+      );
+      if (outcome != RemovalOutcome.verified) {
+        // Nothing changed; the open set is written again (§5.5), and both
+        // receipts settle before anything is reported or released.
+        final documents = store.requestDocumentsWrite();
+        final reading = store.requestReadingStateWrite();
+        final documentsReceipt = await documents;
+        final readingReceipt = await reading;
+        if (!mounted) return;
+        final restored = documentsReceipt.confirmed && readingReceipt.confirmed;
+        final replaced = [
+          for (final match in matches)
+            if (match != null) match.identityLabel,
+        ];
+        _report(
+          '${_replacementFailure(files.length, replaced)}'
+          '${restored ? '' : ' Saved documents in this browser may be out of date.'}',
+        );
+        return;
+      }
+    } else {
+      if (replacements.isNotEmpty) {
+        final cleanup = await store.removeRetainedContent(
+          suppressDocumentIds: replacements.keys,
+        );
+        if (!mounted) return;
+        // Under OFF anything the removal could not clear is off-policy data,
+        // and the interlock has to know that before any later attempt to turn
+        // ON.
+        if (store.effectivePolicy == RetentionPolicy.off &&
+            store.isAvailable &&
+            !cleanup.isConfirmedAbsent) {
+          store.setOffPolicyDataUnresolved(true);
+        }
+      }
+      commit();
+    }
+    // The writes capture the session that now holds the new documents.
     final saved = store.requestDocumentsWrite();
     unawaited(store.requestReadingStateWrite());
     final receipt = await saved;
     if (!mounted) return;
-    // Under ON the user has been told their documents are kept; a save that did
-    // not land contradicts that and has to be said out loud.
-    if (store.effectivePolicy == RetentionPolicy.on && !receipt.confirmed) {
-      _report('This document could not be saved in this browser.');
+    // Under ON the user has been told their documents are kept (S09-11).
+    if (_unsavedUnderOn(receipt)) {
+      _report(
+        files.length == 1
+            ? 'This document could not be saved in this browser.'
+            : 'These documents could not be saved in this browser.',
+      );
     }
+  }
+
+  /// The S09-13 error: the batch was not loaded, and no removal is claimed.
+  static String _replacementFailure(int fileCount, List<String> replaced) {
+    if (fileCount == 1) {
+      return '"${replaced.single}" was not replaced. Removal of its saved copy '
+          'from this browser could not be confirmed.';
+    }
+    final quoted = [for (final name in replaced) '"$name"'];
+    final names = quoted.length == 1
+        ? quoted.single
+        : '${quoted.sublist(0, quoted.length - 1).join(', ')} and '
+              '${quoted.last}';
+    return 'These files were not loaded. Removal of the saved '
+        '${quoted.length == 1 ? 'copy' : 'copies'} of $names from this '
+        'browser could not be confirmed.';
   }
 
   /// Adds [document] to the open set as the active document (D-4).
@@ -973,48 +1069,127 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   }
 
   Future<void> _loadFromFile(BuildContext context) =>
-      _acquireFile(context, pickMarkdownFile);
+      _acquireBatch(context, pickMarkdownFiles);
 
-  /// Picker and drop share acceptance, confirmation and retention behavior.
-  Future<void> _acquireFile(
+  /// Loads picked or dropped files into the open set (§4.5; M5, D-2, D-5,
+  /// M2, E-1). Picker and drop share every step.
+  ///
+  /// Nothing changes until every file has been read and checked, every
+  /// matching name confirmed and, under ON, the saved copy of every document
+  /// being replaced verified removed. The batch is then applied as one change.
+  /// Any failure or Cancel rejects all of it and leaves the open documents, the
+  /// active one and every reading place as they were.
+  Future<void> _acquireBatch(
     BuildContext context,
-    Future<LoadedFile?> Function() acquire, {
+    Future<List<FileCandidate>?> Function() acquire, {
     bool dropped = false,
   }) async {
     final operation = _beginIntake();
     if (operation == null) return;
     try {
-      final file = await acquire();
-      if (file == null || !_validIntake(operation) || !context.mounted) return;
-      if (dropped && (!_homeRendered || _atSettings)) return;
-      if (!isMarkdownFileName(file.name)) {
-        throw UnsupportedFileException(file.name);
-      }
-      if (file.contents.trim().isEmpty) {
-        _report('"${file.name}" is empty.');
+      final candidates = await acquire();
+      if (candidates == null ||
+          candidates.isEmpty ||
+          !_validIntake(operation) ||
+          !context.mounted) {
         return;
       }
-      if (!await _intakeModal(() => _confirmReplace(context))) return;
-      if (!context.mounted || !_beginOpening(operation)) return;
-      await _openDocument(
-        MarkdownDocument.fromSource(
-          file.contents,
-          id: _newDocumentId(),
-          sourceName: file.name,
-        ),
-      );
-    } on UnsupportedFileException catch (error) {
-      if (_validIntake(operation)) {
-        _report(
-          'Cannot open "${error.fileName}". Choose a Markdown file '
-          '(.md, .markdown or .txt).',
-        );
+      if (dropped && (!_homeRendered || _atSettings)) return;
+
+      // Every eligible file is read, and every read settles, before anything
+      // is reported, asked or changed (§4.5 step 2).
+      final reads = await Future.wait([
+        for (final candidate in candidates) _readEligible(candidate),
+      ]);
+      if (!_validIntake(operation) || !context.mounted) return;
+      if (dropped && (!_homeRendered || _atSettings)) return;
+      final problem = _batchProblem(reads);
+      if (problem != null) {
+        _report(problem);
+        return;
       }
+      final files = [for (final read in reads) read.file!]
+        ..sort((a, b) => compareFileNames(a.name, b.name));
+
+      // Same name, same document (M2): one confirmation per match, in D-2
+      // order. "Do the same" accepts the rest; any Cancel rejects them all.
+      final matches = [for (final file in files) _session.byName(file.name)];
+      final confirmations = matches.nonNulls.toList();
+      for (var i = 0; i < confirmations.length; i++) {
+        final sameForOthers = await _intakeModal(
+          () => _confirmReplace(
+            context,
+            confirmations[i],
+            offerSameForOthers: i < confirmations.length - 1,
+          ),
+        );
+        if (sameForOthers == null ||
+            !context.mounted ||
+            !_validIntake(operation)) {
+          return;
+        }
+        if (sameForOthers) break;
+      }
+      if (!context.mounted || !_beginOpening(operation)) return;
+      await _applyBatch(files, matches);
     } catch (error) {
       if (_validIntake(operation)) _report('Could not read that file: $error');
     } finally {
       _endIntake(operation);
     }
+  }
+
+  /// Reads [candidate] if its name is a Markdown filename, keeping a failure
+  /// as a result (§4.5 step 2). A file with any other name is not read or
+  /// decoded: it is rejected by that name, whatever it holds.
+  static Future<_IntakeRead> _readEligible(FileCandidate candidate) async {
+    if (!isMarkdownFileName(candidate.name)) {
+      return (name: candidate.name, file: null, error: null);
+    }
+    try {
+      final file = await candidate.read();
+      return (name: file.name, file: file, error: null);
+    } catch (error) {
+      return (name: candidate.name, file: null, error: error);
+    }
+  }
+
+  /// The first reason the batch cannot be loaded, or null (§4.5 step 4;
+  /// S11-04).
+  ///
+  /// Names are taken in D-2 order. For each, the checks run in turn: an
+  /// unsupported extension, a read or decode failure, empty content, then a
+  /// name used more than once (D-5). Files sharing a name are checked
+  /// together, so the result never depends on which copy was delivered or
+  /// read first.
+  static String? _batchProblem(List<_IntakeRead> reads) {
+    final names = {for (final read in reads) read.name}.toList()
+      ..sort(compareFileNames);
+    for (final name in names) {
+      final named = [
+        for (final read in reads)
+          if (read.name == name) read,
+      ];
+      if (!isMarkdownFileName(name)) {
+        return 'Cannot open "$name". Choose a Markdown file '
+            '(.md, .markdown or .txt).';
+      }
+      final errors = [
+        for (final read in named)
+          if (read.file == null) '${read.error}',
+      ]..sort();
+      if (errors.isNotEmpty) {
+        // The reason is today's, and the file is named (S11-04).
+        return 'Could not read "$name": ${errors.first}';
+      }
+      if (named.any((read) => read.file!.contents.trim().isEmpty)) {
+        return '"$name" is empty.';
+      }
+      if (named.length > 1) {
+        return 'Cannot open these files: more than one is named "$name".';
+      }
+    }
+    return null;
   }
 
   Future<void> _editDocument(BuildContext context) async {
@@ -1219,6 +1394,10 @@ abstract final class Df020Timing {
 
   static Future<void> close(String id) => _app!._closeDocument(id);
 }
+
+/// One file of a batch after §4.5 step 2: read ([file]), failed ([error]), or
+/// not read because its name is not Markdown (both null).
+typedef _IntakeRead = ({String name, LoadedFile? file, Object? error});
 
 class _IntakeOperation {
   _IntakeOperation(this.documentGeneration, this.routeGeneration);

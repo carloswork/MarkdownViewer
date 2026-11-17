@@ -19,6 +19,7 @@ import 'package:markdown_viewer/retention.dart';
 import 'package:markdown_viewer/store.dart';
 
 import 'support/fake_storage.dart';
+import 'support/pick.dart';
 
 /// Covers the home/reader changes from Refinement Round 1.
 ///
@@ -412,7 +413,7 @@ void main() {
       sourceName: 'existing.md',
     );
 
-    tearDown(() => pickMarkdownFile = openAndReadMarkdownFile);
+    tearDown(() => pickMarkdownFiles = openMarkdownFiles);
 
     Future<void> openHomeWith(
       WidgetTester tester,
@@ -441,7 +442,7 @@ void main() {
     testWidgets('cancelling the picker changes nothing and asks nothing', (
       tester,
     ) async {
-      pickMarkdownFile = () async => null;
+      pickMarkdownFiles = pickOne(() async => null);
       await openHomeWith(tester, existing);
 
       await tapLoad(tester);
@@ -453,8 +454,9 @@ void main() {
     testWidgets('an unsupported file is rejected without asking', (
       tester,
     ) async {
-      pickMarkdownFile = () async =>
-          throw const UnsupportedFileException('photo.png');
+      pickMarkdownFiles = pickOne(
+        () async => throw const UnsupportedFileException('photo.png'),
+      );
       await openHomeWith(tester, existing);
 
       await tapLoad(tester);
@@ -469,8 +471,9 @@ void main() {
     ) async {
       // The source rejects empty content before the confirmation, but no test
       // exercised that branch until the Round 2 review pointed it out.
-      pickMarkdownFile = () async =>
-          const LoadedFile(name: 'blank.md', contents: '   \n\n\t\n');
+      pickMarkdownFiles = pickOne(
+        () async => const LoadedFile(name: 'blank.md', contents: '   \n\n\t\n'),
+      );
       await openHomeWith(tester, existing);
 
       await tapLoad(tester);
@@ -483,8 +486,10 @@ void main() {
     testWidgets('a valid file asks only after it has been chosen', (
       tester,
     ) async {
-      pickMarkdownFile = () async =>
-          const LoadedFile(name: 'new.md', contents: '# New\n\nBody.');
+      pickMarkdownFiles = pickOne(
+        () async =>
+            const LoadedFile(name: 'existing.md', contents: '# New\n\nBody.'),
+      );
       await openHomeWith(tester, existing);
 
       await tapLoad(tester);
@@ -503,8 +508,10 @@ void main() {
     testWidgets('cancelling the confirmation keeps the current document', (
       tester,
     ) async {
-      pickMarkdownFile = () async =>
-          const LoadedFile(name: 'new.md', contents: '# New\n\nBody.');
+      pickMarkdownFiles = pickOne(
+        () async =>
+            const LoadedFile(name: 'existing.md', contents: '# New\n\nBody.'),
+      );
       await openHomeWith(tester, existing);
       await tapLoad(tester);
 
@@ -512,14 +519,18 @@ void main() {
       await settle(tester);
 
       expect(find.text('existing.md'), findsOneWidget);
-      expect(find.text('new.md'), findsNothing);
+      // DF-020 M2: the picked file has the open document's name, so nothing
+      // else may have been added either.
+      expect(find.textContaining('other document'), findsNothing);
     });
 
     testWidgets('confirming replaces the document and opens it', (
       tester,
     ) async {
-      pickMarkdownFile = () async =>
-          const LoadedFile(name: 'new.md', contents: '# New\n\nBody.');
+      pickMarkdownFiles = pickOne(
+        () async =>
+            const LoadedFile(name: 'existing.md', contents: '# New\n\nBody.'),
+      );
       await openHomeWith(tester, existing);
       await tapLoad(tester);
 
@@ -533,8 +544,10 @@ void main() {
     testWidgets('with no document stored, nothing is asked at all', (
       tester,
     ) async {
-      pickMarkdownFile = () async =>
-          const LoadedFile(name: 'first.md', contents: '# First\n\nBody.');
+      pickMarkdownFiles = pickOne(
+        () async =>
+            const LoadedFile(name: 'first.md', contents: '# First\n\nBody.'),
+      );
       await openHomeWith(tester, null);
 
       await tapLoad(tester);
@@ -554,7 +567,7 @@ void main() {
       sourceName: 'existing.md',
     );
 
-    tearDown(() => pickMarkdownFile = openAndReadMarkdownFile);
+    tearDown(() => pickMarkdownFiles = openMarkdownFiles);
 
     Future<void> loadFromReader(WidgetTester tester) async {
       await tester.pumpWidget(
@@ -585,7 +598,7 @@ void main() {
     testWidgets('cancelling the picker leaves the reader untouched', (
       tester,
     ) async {
-      pickMarkdownFile = () async => null;
+      pickMarkdownFiles = pickOne(() async => null);
 
       await loadFromReader(tester);
 
@@ -596,8 +609,10 @@ void main() {
     testWidgets('a valid file asks for replacement confirmation', (
       tester,
     ) async {
-      pickMarkdownFile = () async =>
-          const LoadedFile(name: 'new.md', contents: '# New\n\nBody.');
+      pickMarkdownFiles = pickOne(
+        () async =>
+            const LoadedFile(name: 'existing.md', contents: '# New\n\nBody.'),
+      );
 
       await loadFromReader(tester);
 
@@ -614,8 +629,10 @@ void main() {
     testWidgets('cancelling the confirmation keeps the current document', (
       tester,
     ) async {
-      pickMarkdownFile = () async =>
-          const LoadedFile(name: 'new.md', contents: '# New\n\nBody.');
+      pickMarkdownFiles = pickOne(
+        () async =>
+            const LoadedFile(name: 'existing.md', contents: '# New\n\nBody.'),
+      );
 
       await loadFromReader(tester);
       await tester.tap(find.text('Cancel'));
@@ -626,8 +643,10 @@ void main() {
     });
 
     testWidgets('confirming replaces the document in place', (tester) async {
-      pickMarkdownFile = () async =>
-          const LoadedFile(name: 'new.md', contents: '# New\n\nBody.');
+      pickMarkdownFiles = pickOne(
+        () async =>
+            const LoadedFile(name: 'existing.md', contents: '# New\n\nBody.'),
+      );
 
       await loadFromReader(tester);
       await tester.tap(find.text('Replace'));
@@ -641,8 +660,9 @@ void main() {
     testWidgets('an unsupported file is rejected without asking', (
       tester,
     ) async {
-      pickMarkdownFile = () async =>
-          throw const UnsupportedFileException('photo.png');
+      pickMarkdownFiles = pickOne(
+        () async => throw const UnsupportedFileException('photo.png'),
+      );
 
       await loadFromReader(tester);
 

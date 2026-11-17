@@ -59,37 +59,52 @@ bool get _shouldFilterPicker =>
     defaultTargetPlatform != TargetPlatform.iOS &&
     defaultTargetPlatform != TargetPlatform.android;
 
+/// A file the user picked or dropped: named at once, read on demand.
+///
+/// Whether it is read at all is the loading pipeline's decision (DF-020 §4.5
+/// step 2): a file whose name is not Markdown is rejected by that name and
+/// never read or decoded.
+class FileCandidate {
+  FileCandidate(this.name, Future<String> Function() contents)
+    : read = (() async => LoadedFile(name: name, contents: await contents()));
+
+  /// A candidate whose read is supplied whole, for a source that already
+  /// names what it read.
+  FileCandidate.loaded(this.name, this.read);
+
+  final String name;
+  final Future<LoadedFile> Function() read;
+}
+
 /// The picker the app calls.
 ///
 /// A plain function reference rather than a constant so tests can substitute a
-/// fake and exercise the replacement flow's branches without a real file
-/// dialog. Nothing in production reassigns it; tests must restore it in
-/// `tearDown`. Deliberately not `@visibleForTesting` - production reads it on
-/// every load, which is exactly what that annotation forbids.
-Future<LoadedFile?> Function() pickMarkdownFile = openAndReadMarkdownFile;
+/// fake and exercise the loading flow's branches without a real file dialog.
+/// Nothing in production reassigns it; tests must restore it in `tearDown`.
+/// Deliberately not `@visibleForTesting` - production reads it on every load,
+/// which is exactly what that annotation forbids.
+Future<List<FileCandidate>?> Function() pickMarkdownFiles = openMarkdownFiles;
 
 /// The only place in the app that knows a file-picking package exists.
 ///
-/// Returns null when the user cancels. Throws [UnsupportedFileException] when
-/// the chosen file is not Markdown. The extension is validated here in every
-/// case, so a wrong choice produces a clear message whether or not the picker
-/// itself filtered.
-Future<LoadedFile?> openAndReadMarkdownFile() async {
-  final XFile? file = await openFile(
+/// Returns null when the user cancels. Several files can be chosen at once
+/// (M5). Nothing is validated here: the loading pipeline checks every file of
+/// the batch together, so a wrong choice produces a clear message whether or
+/// not the picker itself filtered. A pick with no name is labelled
+/// `document.md`.
+Future<List<FileCandidate>?> openMarkdownFiles() async {
+  final files = await openFiles(
     acceptedTypeGroups: _shouldFilterPicker
         ? <XTypeGroup>[markdownTypeGroup]
         : const <XTypeGroup>[],
   );
-  if (file == null) return null;
-
-  final name = file.name.isNotEmpty ? file.name : 'document.md';
-  if (!isMarkdownFileName(name)) {
-    throw UnsupportedFileException(name);
-  }
-
-  // Reads the picked file in the browser. No upload, no network.
-  final contents = await file.readAsString();
-  debugPrint('Loaded "$name" (${contents.length} chars) locally.');
-
-  return LoadedFile(name: name, contents: contents);
+  if (files.isEmpty) return null;
+  return [
+    for (final file in files)
+      // Reads the picked file in the browser. No upload, no network.
+      FileCandidate(
+        file.name.isNotEmpty ? file.name : 'document.md',
+        file.readAsString,
+      ),
+  ];
 }

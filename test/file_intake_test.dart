@@ -14,26 +14,27 @@ import 'package:markdown_viewer/retention.dart';
 import 'package:markdown_viewer/settings_screen.dart';
 import 'package:markdown_viewer/store.dart';
 import 'support/fake_storage.dart';
+import 'support/pick.dart';
 
 class DropPort {
   late bool Function() eligible;
   late void Function(bool) hover;
-  late void Function(DropCandidate) candidate;
+  late void Function(List<FileCandidate>) candidates;
   bool disposed = false;
   FileDropLease mount({
     required bool Function() eligible,
     required void Function(bool) onHover,
-    required void Function(DropCandidate) onCandidate,
+    required void Function(List<FileCandidate>) onCandidates,
     required void Function(String) onRejected,
   }) {
     this.eligible = eligible;
     hover = onHover;
-    candidate = onCandidate;
+    candidates = onCandidates;
     return FileDropLease(() => disposed = true);
   }
 
   void deliver(Future<LoadedFile> Function() read, {String name = 'new.MD'}) {
-    if (eligible()) candidate(DropCandidate(name, read));
+    if (eligible()) candidates([FileCandidate.loaded(name, read)]);
   }
 }
 
@@ -46,6 +47,8 @@ void main() {
     sourceName: 'old.md',
   );
   const next = LoadedFile(name: 'new.MD', contents: '# New\n\nNew body.');
+  // DF-020 M2: only a file with an open document's name replaces it.
+  const nextOld = LoadedFile(name: 'old.md', contents: '# New\n\nNew body.');
   Future<void> tick(WidgetTester tester) async {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
@@ -91,17 +94,17 @@ void main() {
     port = DropPort();
   });
   tearDown(() {
-    pickMarkdownFile = openAndReadMarkdownFile;
+    pickMarkdownFiles = openMarkdownFiles;
   });
 
   testWidgets(
     'keyboard picker fallback works during dragging without feedback',
     (tester) async {
       var picks = 0;
-      pickMarkdownFile = () async {
+      pickMarkdownFiles = pickOne(() async {
         picks++;
         return next;
-      };
+      });
       await launch(tester);
       port.hover(true);
       await tick(tester);
@@ -117,7 +120,7 @@ void main() {
   testWidgets('phone-size layout retains the shared picker path', (
     tester,
   ) async {
-    pickMarkdownFile = () async => next;
+    pickMarkdownFiles = pickOne(() async => next);
     await launch(tester);
     tester.view.physicalSize = const Size(390, 844);
     await tick(tester);
@@ -165,7 +168,7 @@ void main() {
     await launch(tester, current: old, keep: true);
     backend.data[Store.positionKey] = 'position sentinel';
     final before = Map<String, String>.of(backend.data);
-    port.deliver(() async => next);
+    port.deliver(() async => nextOld, name: 'old.md');
     await tick(tester);
     expect(find.text('Replace current document?'), findsOneWidget);
     expect(port.eligible(), isFalse);
@@ -182,10 +185,10 @@ void main() {
     final pending = Completer<LoadedFile>();
     var extraReads = 0;
     var picks = 0;
-    pickMarkdownFile = () async {
+    pickMarkdownFiles = pickOne(() async {
       picks++;
       return next;
-    };
+    });
     port.deliver(() => pending.future);
     await tick(tester);
     port.deliver(() async {
@@ -209,10 +212,10 @@ void main() {
       final pending = Completer<LoadedFile?>();
       var picks = 0;
       var reads = 0;
-      pickMarkdownFile = () {
+      pickMarkdownFiles = pickOne(() {
         picks++;
         return pending.future;
-      };
+      });
       home(tester).onLoadFile();
       await tick(tester);
       port.deliver(() async {
@@ -329,11 +332,15 @@ void main() {
           .onKeepForNextTimeChanged;
       tester.widget<SettingsScreen>(find.byType(SettingsScreen)).onBack();
       await tick(tester);
+      // DF-020 §5.4: a load that only adds commits first and then saves, so
+      // Home has already given way to the reader while the save is held; its
+      // Settings action is taken beforehand, as a stale tap would hold it.
+      final openSettings = home(tester).onOpenSettings;
       final held = backend.stall(Store.documentKey);
       port.deliver(() async => next);
       await tick(tester);
       expect(port.eligible(), isFalse);
-      home(tester).onOpenSettings();
+      openSettings();
       change(false);
       await tick(tester);
       expect(find.byType(SettingsScreen), findsNothing);
@@ -349,7 +356,7 @@ void main() {
     (tester) async {
       await launch(tester, current: old, keep: true);
       backend.failWrites.add(Store.documentKey);
-      port.deliver(() async => next);
+      port.deliver(() async => nextOld, name: 'old.md');
       await tick(tester);
       await tester.tap(find.text('Replace'));
       await tick(tester);
@@ -370,7 +377,7 @@ void main() {
       await launch(tester, current: old, keep: true);
       final navigate = home(tester).onOpenSettings;
       final before = Map<String, String>.of(backend.data);
-      port.deliver(() async => next);
+      port.deliver(() async => nextOld, name: 'old.md');
       await tick(tester);
       expect(find.text('Replace current document?'), findsOneWidget);
       navigate();
@@ -401,7 +408,7 @@ void main() {
     );
     reader(tester).onReturnHome();
     await tick(tester);
-    port.deliver(() async => next);
+    port.deliver(() async => nextOld, name: 'old.md');
     await tick(tester);
     await tester.tap(find.text('Replace'));
     await tick(tester);

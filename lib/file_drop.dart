@@ -6,11 +6,11 @@ export 'file_drop_types.dart';
 FileDropLease mountFileDrop({
   required bool Function() eligible,
   required void Function(bool) onHover,
-  required void Function(DropCandidate) onCandidate,
+  required void Function(List<FileCandidate>) onCandidates,
   required void Function(String) onRejected,
 }) => implementation.mountFileDrop(
   eligible: eligible,
   onHover: onHover,
-  onCandidate: onCandidate,
+  onCandidates: onCandidates,
   onRejected: onRejected,
 );

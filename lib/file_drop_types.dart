@@ -1,11 +1,6 @@
 import 'file_loader.dart';
 
-/// A classified, synchronously captured browser file; reading remains lazy.
-class DropCandidate {
-  const DropCandidate(this.name, this.read);
-  final String name;
-  final Future<LoadedFile> Function() read;
-}
+export 'file_loader.dart' show FileCandidate;
 
 class FileDropLease {
   FileDropLease(this._release);
@@ -22,6 +17,6 @@ typedef FileDropMount =
     FileDropLease Function({
       required bool Function() eligible,
       required void Function(bool) onHover,
-      required void Function(DropCandidate) onCandidate,
+      required void Function(List<FileCandidate>) onCandidates,
       required void Function(String) onRejected,
     });
