@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.7.0 — 2026-11-21
+
+- Added reading several documents at once. Load from file, and dropping files on the main screen on Windows desktop, now accept several Markdown files together, and each opens as its own document in filename order. Switch between open documents with tabs on wider screens, shown once two or more are open, or with the Documents list on narrow screens, and close any document when you are finished. Pasting Markdown adds a new document. Loading a file with the same name as an open document asks before replacing it, and if any file in a selection cannot be opened, nothing from that selection is added. Search applies to the document you are reading. When Keep for next time is on, all open documents, their reading places and the document you were reading are restored.
+
 ## v1.6.1 — 2026-10-13
 
 - Dragging a file over the main screen on Windows desktop no longer shows a border and drop message. Dropping one Markdown file still opens it. When a drop does not contain exactly one file, the message now reads: “Please drop one Markdown or text file, or use Load from file.”

@@ -75,8 +75,8 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   /// The open documents, the active one, and where each was read to.
   ///
   /// Replaced, never mutated: every change is a new value from one of the
-  /// session's operations. The app still opens one document at a time, so the
-  /// session holds at most one.
+  /// session's operations. It holds every open document, and which of them is
+  /// active when any are open.
   late DocumentSession _session = _initialSession();
 
   /// The document being read. Single-document code reads this, unchanged.
