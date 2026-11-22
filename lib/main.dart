@@ -216,11 +216,13 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
   bool _ownedIntakeModal = false;
   bool _disposing = false;
 
-  bool get _homeRendered => _atHome || _document == null || _inRecovery;
+  /// Whether a dropped file may be loaded now: on Home (not Settings) or on
+  /// the Reader with nothing above it (DF-085), and only while no load or
+  /// retention operation is running. Elsewhere a file drop is still
+  /// suppressed, so the browser never navigates to the file, but ignored.
   bool get _dropEligible =>
       mounted &&
       !_disposing &&
-      _homeRendered &&
       !_atSettings &&
       !_busy &&
       _intake == null &&
@@ -1094,7 +1096,7 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
           !context.mounted) {
         return;
       }
-      if (dropped && (!_homeRendered || _atSettings)) return;
+      if (dropped && _atSettings) return;
 
       // Every eligible file is read, and every read settles, before anything
       // is reported, asked or changed (§4.5 step 2).
@@ -1102,7 +1104,7 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
         for (final candidate in candidates) _readEligible(candidate),
       ]);
       if (!_validIntake(operation) || !context.mounted) return;
-      if (dropped && (!_homeRendered || _atSettings)) return;
+      if (dropped && _atSettings) return;
       final problem = _batchProblem(reads);
       if (problem != null) {
         _report(problem);

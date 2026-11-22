@@ -11,11 +11,14 @@ keep the document. It is a reader, not an editor and not a Markdown IDE.
 
 - **Open a local Markdown file.** `.md`, `.markdown`, `.mdown`, `.mkd` and
   `.txt` are accepted. The file is read in the browser; it is not uploaded.
-- **Drop one local file onto the main screen.** On Windows desktop Chrome,
-  Edge and Firefox, drag one file anywhere on Home, including the Load from
-  file card. A temporary highlight appears while dragging. Replacing the
-  current document still asks for confirmation. Folders and multiple files
-  are rejected; Reader, Settings and open dialogs do not load dropped files.
+- **Drop local files onto the main screen or the document view.** On Windows
+  desktop Chrome, Edge and Firefox, drag one or more Markdown files onto Home
+  or onto the document you are reading; they open as separate documents, in
+  filename order, using the same checks as Load from file. Nothing is
+  highlighted while dragging. A file with the same name as an open document
+  asks before replacing it, and if any file cannot be opened, folders
+  included, nothing from that drop is added. Settings and open menus, sheets
+  and dialogs ignore dropped files.
 - **Paste Markdown text** directly, for content that is not in a file.
 - **Table-of-contents navigation.** Headings are extracted into a Contents
   sheet; tapping an entry jumps to that part of the document.

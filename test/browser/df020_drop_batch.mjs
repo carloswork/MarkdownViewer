@@ -180,14 +180,16 @@ try {
     check(record, 'the three tabs are shown', ['A.md', 'b.md', 'c.md'].every((n) => shown.includes(n)));
   });
 
-  await runCase('a drop onto the Reader is ignored (S11-07)', async ({ record, page, cdp }) => {
+  // DF-085: the Reader at root accepts drops too (formerly S11-07, ignored).
+  await runCase('a drop onto the Reader appends (DF-085)', async ({ record, page, cdp }) => {
     await dropFiles(page, cdp, [f.c]);
     const before = await stored(page);
     await dropFiles(page, cdp, [f.b]);
     const after = await stored(page);
     record.before = before; record.after = after;
     check(record, 'the first drop loaded c.md', JSON.stringify(before.names) === '["c.md"]');
-    check(record, 'nothing changed', JSON.stringify(after) === JSON.stringify(before));
+    check(record, 'the Reader drop appended b.md after c.md', JSON.stringify(after.names) === '["c.md","b.md"]');
+    check(record, 'c.md kept its ID, and b.md is active', after.ids[0] === before.ids[0] && after.activeId === after.ids[1]);
   });
 
   await runCase('a matching name asks, and a confirmed replacement takes the slot', async ({ record, page, cdp }) => {

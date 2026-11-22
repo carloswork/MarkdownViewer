@@ -140,7 +140,9 @@ void main() {
       expect(reader(tester).document.sourceName, 'new.MD');
       expect(reader(tester).document.source, next.contents);
       expect(backend.writes, isEmpty);
-      expect(port.eligible(), isFalse);
+      // The Reader at root accepts drops too (DF-085); Home is no longer the
+      // only place a dropped file can be loaded.
+      expect(port.eligible(), isTrue);
     },
   );
   testWidgets(
