@@ -41,7 +41,9 @@ keep the document. It is a reader, not an editor and not a Markdown IDE.
 ## What it does not do
 
 Desktop file dropping has been verified on Windows Chrome 154, Edge 155 and
-Firefox 157. Native dropping on macOS/Linux or Safari remains unverified.
+Firefox 157, and dropping two files onto the document view on Windows Chrome
+158, Edge 158 and Firefox 160. Native dropping on macOS/Linux or Safari
+remains unverified.
 Use **Load from file** as the alternative, including on phones and tablets;
 this change adds no mobile or tablet drop-support commitment.
 
