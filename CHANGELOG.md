@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.8.0 — 2026-11-23
+
+- Markdown files can now also be dropped onto the document you are reading on Windows desktop, so you no longer need to return to the main screen to add one. Several files can be dropped together: each opens as its own document in filename order, and the first of them is shown. The same rules as Load from file apply: a file with the same name as an open document asks before replacing it, and if any file in a drop cannot be opened, nothing from that drop is added.
+
 ## v1.7.0 — 2026-11-21
 
 - Added reading several documents at once. Load from file, and dropping files on the main screen on Windows desktop, now accept several Markdown files together, and each opens as its own document in filename order. Switch between open documents with tabs on wider screens, shown once two or more are open, or with the Documents list on narrow screens, and close any document when you are finished. Pasting Markdown adds a new document. Loading a file with the same name as an open document asks before replacing it, and if any file in a selection cannot be opened, nothing from that selection is added. Search applies to the document you are reading. When Keep for next time is on, all open documents, their reading places and the document you were reading are restored.
