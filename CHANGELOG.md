@@ -3,7 +3,7 @@
 ## v1.9.0 — 2026-11-24
 
 - Open documents can now be arranged in the order you prefer. On wider screens, drag a document tab to a new place, and the document you moved is shown; when there are more tabs than fit, the row scrolls as you drag towards its edge. On a touch screen, press and hold a tab before dragging; a swipe still scrolls the tabs. With two or more documents open, Move document in the Reader menu moves the current document to first, or one place left or right (up or down in the Documents list on narrower screens), without dragging. When Keep for next time is on, the order you choose is restored next time.
-- Document tabs can now be reached with Tab and Shift+Tab and opened with Enter or Space. The Reader menu button and each document's close button now have a single, clear accessible name.
+- Keyboard access to document tabs is improved: they can be reached with Tab and Shift+Tab and opened with Enter or Space. The Reader menu button and each document's close button now have a single, clear accessible name.
 
 ## v1.8.0 — 2026-11-23
 
