@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.9.0 — 2026-11-24
+
+- Open documents can now be arranged in the order you prefer. On wider screens, drag a document tab to a new place, and the document you moved is shown; when there are more tabs than fit, the row scrolls as you drag towards its edge. On a touch screen, press and hold a tab before dragging; a swipe still scrolls the tabs. With two or more documents open, Move document in the Reader menu moves the current document to first, or one place left or right (up or down in the Documents list on narrower screens), without dragging. When Keep for next time is on, the order you choose is restored next time.
+- Document tabs can now be reached with Tab and Shift+Tab and opened with Enter or Space. The Reader menu button and each document's close button now have a single, clear accessible name.
+
 ## v1.8.0 — 2026-11-23
 
 - Markdown files can now also be dropped onto the document you are reading on Windows desktop, so you no longer need to return to the main screen to add one. Several files can be dropped together: each opens as its own document in filename order, and the first of them is shown. The same rules as Load from file apply: a file with the same name as an open document asks before replacing it, and if any file in a drop cannot be opened, nothing from that drop is added.
