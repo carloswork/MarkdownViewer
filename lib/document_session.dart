@@ -189,6 +189,31 @@ class DocumentSession {
     );
   }
 
+  /// Moves [id] to [toIndex] in the order, keeping every other document's
+  /// relative order (DF-086).
+  ///
+  /// [toIndex] is clamped to the open range. Order belongs to the documents,
+  /// so only [documentsRevision] changes: the active document and every
+  /// position stay as they were. A move to the document's own place changes
+  /// nothing and returns this value. Throws [ArgumentError] when [id] is not
+  /// open.
+  DocumentSession move(String id, int toIndex) {
+    final from = documents.indexWhere((document) => document.id == id);
+    if (from < 0) throw ArgumentError.value(id, 'id', 'not open');
+    final to = toIndex.clamp(0, documents.length - 1);
+    if (from == to) return this;
+    final moved = documents[from];
+    return DocumentSession._(
+      documents: [...documents]
+        ..removeAt(from)
+        ..insert(to, moved),
+      activeId: activeId,
+      positions: positions,
+      documentsRevision: documentsRevision + 1,
+      readingStateRevision: readingStateRevision,
+    );
+  }
+
   /// Closes [id] and reports which document is active afterwards (D-11).
   ///
   /// Closing an inactive document leaves the active one unchanged. Closing the

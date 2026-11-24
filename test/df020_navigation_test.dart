@@ -55,6 +55,27 @@ Finder inTabs(Finder finder) =>
 ReaderScreen reader(WidgetTester tester) =>
     tester.widget<ReaderScreen>(find.byType(ReaderScreen));
 
+/// The label of the nearest labelled [Semantics] above [context]: for a
+/// focused document tab, the tab's own name.
+///
+/// DF-086 (disclosed V-16 lookup change, plan.md §3.5): the tab's focus node
+/// now sits on its label, below the tap and material layers, which add
+/// unlabelled [Semantics] widgets of their own. The nearest [Semantics] is
+/// therefore no longer the tab's; the nearest labelled one is. Only this
+/// lookup changed; the assertions are as accepted.
+String? labelAbove(BuildContext? context) {
+  String? label;
+  context?.visitAncestorElements((element) {
+    final widget = element.widget;
+    if (widget is Semantics && widget.properties.label != null) {
+      label = widget.properties.label;
+      return false;
+    }
+    return true;
+  });
+  return label;
+}
+
 void main() {
   late FakeBackend backend;
   var launches = 0;
@@ -470,8 +491,7 @@ void main() {
         final tooltip = focus?.context
             ?.findAncestorWidgetOfExactType<Tooltip>()
             ?.message;
-        final tab = focus?.context?.findAncestorWidgetOfExactType<Semantics>();
-        order.add(tooltip ?? tab?.properties.label ?? '?');
+        order.add(tooltip ?? labelAbove(focus?.context) ?? '?');
       }
       final aTab = order.indexOf('a.md');
       final aClose = order.indexOf('Close a.md');
@@ -489,10 +509,7 @@ void main() {
       );
 
       // Focus the a.md tab again and activate it with Enter.
-      while (tester.binding.focusManager.primaryFocus?.context
-              ?.findAncestorWidgetOfExactType<Semantics>()
-              ?.properties
-              .label !=
+      while (labelAbove(tester.binding.focusManager.primaryFocus?.context) !=
           'a.md') {
         await tester.sendKeyEvent(LogicalKeyboardKey.tab);
         await tester.pump();

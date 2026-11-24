@@ -1053,6 +1053,59 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
     }
   }
 
+  // --- Manual order (DF-086) -------------------------------------------------
+
+  /// Moves [id] to [toIndex] and, when [activate] is set, makes it active.
+  ///
+  /// Used by a dropped tab (activate: D-004) and by `Move document` (the
+  /// active document, which stays active). Like a switch it never waits on
+  /// storage and holds no busy state: the session is changed in one frame,
+  /// then the writes that record it follow. The documents write is whole-set
+  /// and coalescing, so a later write always carries the latest order. Under
+  /// ON a write that does not land is reported with the existing message; the
+  /// new order stays for this page lifetime. Under OFF nothing is written.
+  /// Inert while a load, close or removal is being verified (S10-08).
+  Future<void> _moveDocument(
+    String id,
+    int toIndex, {
+    required bool activate,
+  }) async {
+    if (_navigationInert || !_session.contains(id)) return;
+    final moved = _session.move(id, toIndex);
+    final next = activate ? moved.activate(id) : moved;
+    if (identical(next, _session)) return;
+    final reordered = next.documentsRevision != _session.documentsRevision;
+    final activated = next.activeId != _session.activeId;
+    setState(() {
+      if (activated) _routeGeneration++;
+      _session = next;
+    });
+    if (activated) unawaited(store.requestReadingStateWrite());
+    if (!reordered) return;
+    final receipt = await store.requestDocumentsWrite();
+    if (!mounted) return;
+    if (_unsavedUnderOn(receipt)) {
+      _report('Your changes could not be saved in this browser.');
+    }
+  }
+
+  /// `Move document` (D-003): the moves for the active document.
+  Future<void> _showMoveDocument(
+    BuildContext context, {
+    required bool wide,
+  }) async {
+    final id = _session.activeId;
+    if (_navigationInert || id == null) return;
+    final to = await showMoveDocumentSheet(
+      context,
+      index: _session.documents.indexWhere((document) => document.id == id),
+      count: _session.documents.length,
+      horizontal: wide,
+    );
+    if (!mounted || to == null) return;
+    await _moveDocument(id, to, activate: false);
+  }
+
   Future<void> _pasteNewDocument(BuildContext context) async {
     final operation = _beginIntake();
     if (operation == null) return;
@@ -1347,6 +1400,9 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
                               ? () => _showDocuments(context)
                               : null,
                           documentCount: _session.documents.length,
+                          onMoveDocument: several
+                              ? () => _showMoveDocument(context, wide: wide)
+                              : null,
                           onFirstFrame: kDf020Timing
                               ? () => Df020Timing._shown(document.id)
                               : null,

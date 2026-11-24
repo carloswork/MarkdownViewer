@@ -104,6 +104,7 @@ class ReaderScreen extends StatefulWidget {
     this.onCloseDocument,
     this.onShowDocuments,
     this.documentCount = 1,
+    this.onMoveDocument,
     this.onFirstFrame,
   });
 
@@ -154,6 +155,10 @@ class ReaderScreen extends StatefulWidget {
 
   /// How many documents are open, for the switcher's entry.
   final int documentCount;
+
+  /// Opens `Move document` for this document (DF-086 D-003), offered in both
+  /// layouts with two or more documents open. The app owns the moves.
+  final VoidCallback? onMoveDocument;
 
   /// Measurement seam (DF-020 V-17): called after the frame in which this
   /// reader first builds.
@@ -1281,6 +1286,7 @@ class _ReaderScreenState extends State<ReaderScreen>
               ? null
               : widget.documentCount,
           canClose: widget.onCloseDocument != null,
+          canMove: widget.onMoveDocument != null,
         ),
       ),
     );
@@ -1323,6 +1329,10 @@ class _ReaderScreenState extends State<ReaderScreen>
         await _waitForMenuToClose(menuKey);
         if (!mounted) return;
         widget.onCloseDocument?.call();
+      case _MenuAction.move:
+        await _waitForMenuToClose(menuKey);
+        if (!mounted) return;
+        widget.onMoveDocument?.call();
       case _MenuAction.home:
         await _waitForMenuToClose(menuKey);
         if (!mounted) return;
@@ -1586,6 +1596,7 @@ enum _MenuAction {
   language,
   documents,
   close,
+  move,
   home,
 }
 
@@ -1598,6 +1609,7 @@ class _ReaderMenu extends StatelessWidget {
     required this.languageSubtitle,
     this.documentCount,
     this.canClose = false,
+    this.canMove = false,
   });
 
   final MarkdownDocument document;
@@ -1616,6 +1628,9 @@ class _ReaderMenu extends StatelessWidget {
 
   /// Whether `Close document` is offered.
   final bool canClose;
+
+  /// Whether `Move document` is offered (DF-086).
+  final bool canMove;
 
   @override
   Widget build(BuildContext context) {
@@ -1751,6 +1766,15 @@ class _ReaderMenu extends StatelessWidget {
                 palette: palette,
                 onTap: () => Navigator.pop(context, _MenuAction.close),
               ),
+            // DF-086: after `Close document`, so every existing tile keeps its
+            // index, and before `Return to main`, which stays last (UX-3).
+            if (canMove)
+              _MenuTile(
+                icon: Icons.swap_horiz_rounded,
+                label: 'Move document',
+                palette: palette,
+                onTap: () => Navigator.pop(context, _MenuAction.move),
+              ),
             _MenuTile(
               icon: Icons.home_rounded,
               label: 'Return to main',
@@ -1829,17 +1853,23 @@ class _MenuButton extends StatelessWidget {
             shape: const CircleBorder(),
             elevation: 2,
             shadowColor: Colors.black.withValues(alpha: 0.25),
-            child: InkWell(
-              focusNode: focusNode,
-              autofocus: true,
-              customBorder: const CircleBorder(),
-              onTap: onTap,
-              child: Padding(
-                padding: const EdgeInsets.all(13),
-                child: Icon(
-                  Icons.more_horiz_rounded,
-                  size: 22,
-                  color: palette.text,
+            // The button's accessible name (DF-086 PC-5); nothing visible
+            // changes. Without it the button is an unnamed `button`.
+            child: Semantics(
+              label: 'Reader menu',
+              button: true,
+              child: InkWell(
+                focusNode: focusNode,
+                autofocus: true,
+                customBorder: const CircleBorder(),
+                onTap: onTap,
+                child: Padding(
+                  padding: const EdgeInsets.all(13),
+                  child: Icon(
+                    Icons.more_horiz_rounded,
+                    size: 22,
+                    color: palette.text,
+                  ),
                 ),
               ),
             ),
