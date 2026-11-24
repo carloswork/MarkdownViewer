@@ -810,5 +810,61 @@ void main() {
       await settle(tester);
       semantics.dispose();
     });
+
+    // --- IM-3 (CP1 F-1): one accessible name per close control ------------
+
+    testWidgets('F-1: each close control is named exactly "Close <name>" with '
+        'no second (tooltip) name, in the tabs and in the Documents sheet; '
+        'the tooltip still shows', (tester) async {
+      final semantics = tester.ensureSemantics();
+      void expectOneName(Finder control, String name) {
+        final data = tester.getSemantics(control).getSemanticsData();
+        expect(data.label, name);
+        expect(data.tooltip, isEmpty, reason: 'no second name source');
+        expect(data.flagsCollection.isButton, isTrue);
+      }
+
+      useSize(tester, wide);
+      seedOn(['a', 'b'], active: 'a');
+      await launch(tester);
+      await continueReading(tester);
+      for (final name in ['a.md', 'b.md']) {
+        expectOneName(
+          find.descendant(
+            of: inTabs(find.byTooltip('Close $name')),
+            matching: find.byType(IconButton),
+          ),
+          'Close $name',
+        );
+      }
+      // The tooltip is still there for pointer users.
+      tester
+          .state<TooltipState>(inTabs(find.byTooltip('Close b.md')))
+          .ensureTooltipVisible();
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(find.text('Close b.md'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 2));
+
+      useSize(tester, narrow);
+      await settle(tester);
+      await openMenu(tester);
+      await tester.tap(find.text('Documents (2)'));
+      await settle(tester);
+      await settle(tester);
+      final sheet = find.byType(BottomSheet);
+      for (final name in ['a.md', 'b.md']) {
+        expectOneName(
+          find.descendant(
+            of: find.descendant(
+              of: sheet,
+              matching: find.byTooltip('Close $name'),
+            ),
+            matching: find.byType(IconButton),
+          ),
+          'Close $name',
+        );
+      }
+      semantics.dispose();
+    });
   });
 }

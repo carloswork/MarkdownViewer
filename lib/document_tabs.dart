@@ -521,16 +521,12 @@ class _DocumentTabState extends State<_DocumentTab> {
                       ),
                     ),
                   ),
-                  IconButton(
-                    tooltip: 'Close $label',
+                  _CloseControl(
+                    label: label,
                     iconSize: 16,
                     visualDensity: VisualDensity.compact,
                     color: palette.muted,
                     onPressed: busy ? null : widget.onClose,
-                    icon: Icon(
-                      Icons.close_rounded,
-                      semanticLabel: 'Close $label',
-                    ),
                   ),
                 ],
               ),
@@ -670,11 +666,10 @@ class _DocumentRow extends StatelessWidget {
         ),
       ),
       onTap: onSelect,
-      trailing: IconButton(
-        tooltip: 'Close $label',
+      trailing: _CloseControl(
+        label: label,
         color: palette.muted,
         onPressed: onClose,
-        icon: Icon(Icons.close_rounded, semanticLabel: 'Close $label'),
       ),
     );
   }
@@ -758,4 +753,40 @@ Future<int?> showMoveDocumentSheet(
       );
     },
   );
+}
+
+/// A document's close control: a close icon named `Close <name>` (S10-06).
+///
+/// The tooltip shows the same words but is kept out of the semantics tree:
+/// as an `IconButton` tooltip it was a second source of the same name, and
+/// browsers announced `Close <name> Close <name>` (DF-086 F-1).
+class _CloseControl extends StatelessWidget {
+  const _CloseControl({
+    required this.label,
+    required this.color,
+    required this.onPressed,
+    this.iconSize,
+    this.visualDensity,
+  });
+
+  final String label;
+  final Color color;
+  final VoidCallback? onPressed;
+  final double? iconSize;
+  final VisualDensity? visualDensity;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: 'Close $label',
+      excludeFromSemantics: true,
+      child: IconButton(
+        iconSize: iconSize,
+        visualDensity: visualDensity,
+        color: color,
+        onPressed: onPressed,
+        icon: Icon(Icons.close_rounded, semanticLabel: 'Close $label'),
+      ),
+    );
+  }
 }

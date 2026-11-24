@@ -5,7 +5,7 @@
 //
 //   node test/browser/df086_tabs.mjs --browser chrome|edge|firefox|webkit \
 //     --playwright <dir with node_modules/playwright> --bundle <release bundle> \
-//     --out <file.json> [--cases kb,kb5,menu,narrow,drag,r1,r7] \
+//     --out <file.json> [--cases kb,kb5,menu,narrow,drag,swipe,r1,r7] \
 //     [--files <scratch dir, for the RO-14 Reader drop>] [--runs 10] \
 //     [--r7-runs 5] [--modes off,on]
 //
@@ -34,6 +34,7 @@
 //            RO-7 by touch (DevTools touch in Chromium; synthetic touch
 //            PointerEvents elsewhere), RO-13, and RO-14 (a Reader file drop
 //            after a manual move; Chromium, with --files).
+//   * swipe  RO-6 on the ten-tab overflowing strip, every browser (touch as for drag).
 //   * r1     RO-8 / risk R-1: a mouse drag held still at the right edge of an
 //            overflowing strip, --runs consecutive fresh runs per mode.
 //   * r7     RO-7b / risk R-7 (Chromium): a touch swipe of an overflowing
@@ -63,7 +64,7 @@ const BROWSER = argument('browser');
 const PLAYWRIGHT = argument('playwright');
 const BUNDLE = resolve(argument('bundle'));
 const OUT = resolve(argument('out'));
-const CASES = argument('cases', 'kb,entry,kb5,menu,narrow,drag,r1,r7').split(',');
+const CASES = argument('cases', 'kb,entry,kb5,menu,narrow,drag,swipe,r1,r7').split(',');
 const FILES = argument('files', '') ? resolve(argument('files')) : null;
 
 const sha = async (path) => createHash('sha256').update(await readFile(path)).digest('hex');
@@ -261,6 +262,10 @@ try {
         const all = await nodes(page);
         for (const name of NAMES) {
           check(rec, `S10-06 close control still exposes "Close ${name}"`, all.some((n) => n.label === `Close ${name}`));
+          // The browser's computed accessible name, exact (DF-086 F-1): one
+          // button named "Close <name>", not "Close <name> Close <name>".
+          const exact = await page.getByRole('button', { name: `Close ${name}`, exact: true }).count();
+          check(rec, `S10-06 / F-1 exactly one button whose computed name is exactly "Close ${name}"`, exact === 1, { exact });
         }
         const menu = all.filter((n) => n.label === 'Reader menu');
         check(rec, 'KB-7 the Reader menu button is a button named "Reader menu"', menu.length === 1 && menu[0].role === 'button', { menu });
@@ -480,6 +485,10 @@ try {
         await delay(1200);
         const list = (await nodes(page)).map((n) => n.label).filter((l) => NAMES.includes(l));
         check(rec, 'NS-1 Documents sheet shows the new order', same(list, ['implementation.md', 'decision.md', 'plan.md']), { list });
+        for (const name of NAMES) {
+          const exact = await page.getByRole('button', { name: `Close ${name}`, exact: true }).count();
+          check(rec, `S10-06 / F-1 Documents sheet: exactly one button whose computed name is exactly "Close ${name}"`, exact === 1, { exact });
+        }
       } finally {
         await context.close();
       }
@@ -523,6 +532,7 @@ try {
   const RUNS = Number(argument('runs', '10'));
   const R7_RUNS = Number(argument('r7-runs', '5'));
   const RO7_TRIALS = Number(argument('ro7-trials', '10'));
+  const SWIPE_RUNS = Number(argument('swipe-runs', '2'));
   const MODES = argument('modes', 'off,on').split(',');
   const FLING_WAIT = Number(argument('fling-wait', '1200'));
   const SHOTS = argument('shots', '') === '1';
@@ -753,6 +763,39 @@ try {
         if (t === 'touchEnd') window.__touchTarget = null;
       }, [type, x, y]),
     };
+  }
+
+  // --- RO-6 on an overflowing strip, every browser (CP2 review G-1) --------
+  //
+  // A touch swipe of 400 px, held before lifting, on the ten-tab strip: the
+  // strip scrolls; nothing is reordered or activated. Touch is the DevTools
+  // protocol in Chromium and synthetic touch PointerEvents elsewhere.
+  if (CASES.includes('swipe')) {
+    await runCase('swipe (RO-6: touch swipe of an overflowing strip)', async (rec) => {
+      const cal = await calibrate({ hasTouch: true });
+      const t0 = cal.tabs;
+      const y = t0[0].y;
+      for (const mode of MODES) {
+        for (let run = 1; run <= SWIPE_RUNS; run++) {
+          const { context, page } = await open({ active: LONG[0], names: LONG, semantics: mode === 'on', continueAt: cal.continueAt, contextOptions: { hasTouch: true } });
+          try {
+            const touch = await touchDriver(page, context);
+            await touch.send('touchStart', 850, y);
+            for (let k = 1; k <= 20; k++) { await touch.send('touchMove', 850 - 20 * k, y); await delay(16); }
+            await delay(300);
+            await touch.send('touchEnd', 450, y);
+            await delay(1200);
+            const s = await stored(page);
+            const t = await layoutAfter(page);
+            const shift = Math.round(t[0].left - t0[0].left);
+            check(rec, `RO-6 semantics ${mode} run ${run} (${touch.kind}): the strip scrolls (${shift} px), order and active document unchanged`,
+              shift < -200 && same(s.names, LONG) && s.active === LONG[0], { shift, stored: s });
+          } finally {
+            await context.close();
+          }
+        }
+      }
+    });
   }
 
   if (CASES.includes('drag')) {
