@@ -5,7 +5,9 @@
 //
 //   node test/browser/df086_tabs.mjs --browser chrome|edge|firefox|webkit \
 //     --playwright <dir with node_modules/playwright> --bundle <release bundle> \
-//     --out <file.json> [--cases kb,kb5,menu,narrow]
+//     --out <file.json> [--cases kb,kb5,menu,narrow,drag,r1,r7] \
+//     [--files <scratch dir, for the RO-14 Reader drop>] [--runs 10] \
+//     [--r7-runs 5] [--modes off,on]
 //
 // Each case starts in a fresh browser context with a saved set of three
 // documents under `Keep for next time` ON (decision.md, implementation.md,
@@ -28,12 +30,21 @@
 //            Move document -> Move to first / Move right / Move left.
 //   * narrow (semantics ON, 390 px): NS-1, Move up / Move down and the
 //            Documents sheet's order.
+//   * drag   (semantics OFF, and ON recorded): RO-1..RO-5 by mouse, RO-6 and
+//            RO-7 by touch (DevTools touch in Chromium; synthetic touch
+//            PointerEvents elsewhere), RO-13, and RO-14 (a Reader file drop
+//            after a manual move; Chromium, with --files).
+//   * r1     RO-8 / risk R-1: a mouse drag held still at the right edge of an
+//            overflowing strip, --runs consecutive fresh runs per mode.
+//   * r7     RO-7b / risk R-7 (Chromium): a touch swipe of an overflowing
+//            strip (held, and flinging to the end), then a long-press drag.
+//   * entry  (with kb): forward Tab from the Reader menu through the page exit.
 //
 // This is SIMULATED input (Playwright keyboard and mouse). It is not native
 // Human, physical-device or screen-reader evidence.
 
 import { createHash } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -52,7 +63,8 @@ const BROWSER = argument('browser');
 const PLAYWRIGHT = argument('playwright');
 const BUNDLE = resolve(argument('bundle'));
 const OUT = resolve(argument('out'));
-const CASES = argument('cases', 'kb,kb5,menu,narrow').split(',');
+const CASES = argument('cases', 'kb,entry,kb5,menu,narrow,drag,r1,r7').split(',');
+const FILES = argument('files', '') ? resolve(argument('files')) : null;
 
 const sha = async (path) => createHash('sha256').update(await readFile(path)).digest('hex');
 const pw = await import(pathToFileURL(join(PLAYWRIGHT, 'node_modules', 'playwright', 'index.mjs')).href);
@@ -71,11 +83,11 @@ const SAVED_AT = '2026-11-23T00:00:00.000Z';
 const idOf = (name) => `df086-${name.replace('.md', '')}`;
 const body = (name) => `# ${name}\n\n${Array.from({ length: 30 }, (_, i) => `Paragraph ${i} of ${name}.`).join('\n\n')}\n`;
 
-function seedValues(active) {
+function seedValues(active, names = NAMES) {
   return {
     settings: JSON.stringify({ appearance: 'system', fontScale: 1.0, wrapCode: false, keepForNextTime: true }),
     document: JSON.stringify(['saudo-document-set', 2, {
-      documents: NAMES.map((name) => ({
+      documents: names.map((name) => ({
         id: idOf(name), title: name, source: body(name), createdAt: SAVED_AT, updatedAt: SAVED_AT,
         sourceName: name, origin: 'file', scriptPreference: 'auto',
       })),
@@ -182,11 +194,11 @@ const NARROW = { width: 390, height: 844 };
 
 /// Opens a fresh context on the seeded set and continues reading.
 /// With semantics off, `Continue reading` is clicked at [continueAt].
-async function open({ viewport = WIDE, active = 'plan.md', semantics = true, continueAt = null } = {}) {
-  const context = await browser.newContext({ viewport });
+async function open({ viewport = WIDE, active = 'plan.md', names = NAMES, semantics = true, continueAt = null, contextOptions = {} } = {}) {
+  const context = await browser.newContext({ viewport, ...contextOptions });
   const page = await context.newPage();
   await page.goto(`${server.origin}/__seed-page-not-the-app`);
-  await page.evaluate(SEED, seedValues(active));
+  await page.evaluate(SEED, seedValues(active, names));
   await page.goto(`${server.origin}/`);
   await page.waitForSelector('flt-semantics-placeholder', { state: 'attached', timeout: 90000 });
   await delay(1500);
@@ -498,6 +510,373 @@ try {
           { before, order: await order(page), selected: await selected(page) });
       } finally {
         await context.close();
+      }
+    });
+  }
+  // --- R-1 / RO-8 and R-7 / RO-7b: drag on an overflowing strip -----------
+  //
+  // Ten documents overflow the 1000 px strip. Each run is a fresh context.
+  // The oracle is the stored order and the stored active document (Keep ON),
+  // never the positions of semantic rectangles. Semantics OFF is the primary
+  // mode (plan §3.3); semantics ON is run and recorded.
+  const LONG = Array.from({ length: 10 }, (_, k) => `m${k}-a-fairly-long-document-name.md`);
+  const RUNS = Number(argument('runs', '10'));
+  const R7_RUNS = Number(argument('r7-runs', '5'));
+  const RO7_TRIALS = Number(argument('ro7-trials', '10'));
+  const MODES = argument('modes', 'off,on').split(',');
+  const FLING_WAIT = Number(argument('fling-wait', '1200'));
+  const SHOTS = argument('shots', '') === '1';
+  const moved = (names, from, to) => { const next = [...names]; const [item] = next.splice(from, 1); next.splice(to, 0, item); return next; };
+
+  /// Tab rectangles and the Continue reading position, read once with
+  /// semantics on: layout does not depend on the semantics mode.
+  async function calibrate(contextOptions = {}) {
+    const context = await browser.newContext({ viewport: WIDE, ...contextOptions });
+    try {
+      const page = await context.newPage();
+      await page.goto(`${server.origin}/__seed-page-not-the-app`);
+      await page.evaluate(SEED, seedValues(LONG[0], LONG));
+      await page.goto(`${server.origin}/`);
+      await page.waitForSelector('flt-semantics-placeholder', { state: 'attached', timeout: 90000 });
+      await delay(1500);
+      await page.evaluate(() => document.querySelector('flt-semantics-placeholder')?.click());
+      await delay(1200);
+      const button = page.getByRole('button', { name: /Continue reading/ }).first();
+      const box = await button.boundingBox();
+      await button.click({ force: true });
+      await delay(1800);
+      return { continueAt: { x: box.x + box.width / 2, y: box.y + box.height / 2 }, tabs: await tabs(page) };
+    } finally {
+      await context.close();
+    }
+  }
+
+  /// After a run with semantics off, turns semantics on to read the layout.
+  async function layoutAfter(page) {
+    const already = await page.evaluate(() => document.querySelectorAll('[role=tab]').length);
+    if (!already) {
+      await page.evaluate(() => document.querySelector('flt-semantics-placeholder')?.click());
+      await delay(1200);
+    }
+    return tabs(page);
+  }
+
+  if (CASES.includes('r1')) {
+    await runCase('r1 (RO-8: mouse drag held at the right edge of an overflowing strip)', async (rec) => {
+      const cal = await calibrate();
+      const t0 = cal.tabs;
+      const vw = WIDE.width;
+      check(rec, 'pre: the strip overflows', t0.length === 10 && t0[9].right > vw, { lastRight: t0[9]?.right });
+      const lastVisible = t0.filter((t) => t.right <= vw).length - 1;
+      const releaseX = vw - 5;
+      note(rec, 'calibration', { continueAt: cal.continueAt, y: t0[0].y, lastFullyVisibleIndex: lastVisible, releaseX });
+      for (const mode of MODES) {
+        const results = [];
+        for (let run = 1; run <= RUNS; run++) {
+          const { context, page } = await open({ active: LONG[0], names: LONG, semantics: mode === 'on', continueAt: cal.continueAt });
+          try {
+            const a = t0[0];
+            await page.mouse.move(a.x, a.y);
+            await page.mouse.down();
+            for (let k = 1; k <= 15; k++) { await page.mouse.move(a.x + ((releaseX - a.x) * k) / 15, a.y); await delay(30); }
+            // Hold the pointer still at the edge while the strip scrolls to its
+            // end (a real held mouse sends no further moves).
+            await delay(6000);
+            await page.mouse.up();
+            await delay(1500);
+            const s = await stored(page);
+            const t = await layoutAfter(page);
+            const dropped = t.find((x) => x.label === LONG[0]);
+            const toIndex = s.names.indexOf(LONG[0]);
+            const ok = toIndex > lastVisible && same(s.names, moved(LONG, 0, toIndex)) && s.active === LONG[0]
+              && dropped && dropped.left >= 0 && dropped.right <= vw && dropped.selected === 'true';
+            results.push({ run, ok: Boolean(ok), toIndex, active: s.active, dropped: dropped && { left: Math.round(dropped.left), right: Math.round(dropped.right) } });
+            console.log(`      r1 ${mode} run ${run}: ${ok ? 'applied' : 'NOT applied'} to=${toIndex} active=${s.active}`);
+          } finally {
+            await context.close();
+          }
+        }
+        const applied = results.filter((r) => r.ok).length;
+        let consecutive = 0;
+        for (const r of results) consecutive = r.ok ? consecutive + 1 : 0;
+        const record = { mode, applied, runs: results.length, results };
+        if (mode === 'off') {
+          check(rec, `RO-8 semantics off: drop after auto-scroll applied ${applied}/${results.length} (needs ${RUNS}/${RUNS} consecutive), stored order, dropped tab active, both edges in view`, applied === results.length && results.length === RUNS, record);
+        } else {
+          note(rec, `RO-8 semantics ${mode} (recorded): applied ${applied}/${results.length}`, record);
+        }
+      }
+    });
+  }
+
+  if (CASES.includes('r7') && BROWSER !== 'firefox' && BROWSER !== 'webkit') {
+    await runCase('r7 (RO-7b: touch swipe of an overflowing strip, then long-press drag)', async (rec) => {
+      const cal = await calibrate({ hasTouch: true });
+      const t0 = cal.tabs;
+      const y = t0[0].y;
+      // The same swipe in a semantics-on context, to measure how far it moves the strip.
+      const swipe400 = async (touch) => {
+        await touch('touchStart', 850, y);
+        for (let k = 1; k <= 20; k++) { await touch('touchMove', 850 - 20 * k, y); await delay(16); }
+        await delay(300);
+        await touch('touchEnd', 450, y);
+        await delay(1200);
+      };
+      let swipeShift;
+      {
+        const { context, page } = await open({ active: LONG[0], names: LONG, semantics: true, contextOptions: { hasTouch: true } });
+        try {
+          const cdp = await context.newCDPSession(page);
+          await swipe400((type, x, yy) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x: Math.round(x), y: Math.round(yy) }] }));
+          swipeShift = (await tabs(page))[0].left - t0[0].left;
+        } finally {
+          await context.close();
+        }
+      }
+      note(rec, 'calibration', { continueAt: cal.continueAt, y, firstLeft: Math.round(t0[0].left), swipeShift: Math.round(swipeShift), endShift: Math.round((WIDE.width - 8) - t0[9].right) });
+      // Two swipe styles: `held` stops before lifting (no fling; the strip
+      // moves by a measured shift); `fling` lifts while moving fast, as
+      // Planning's P3 did, and the strip flings to its end. The long press
+      // starts on a tab's label (a long press on its close control shows the
+      // control's tooltip instead, as before DF-086) and moves exactly one
+      // tab width left (the ten tabs are equally wide), onto the tab before.
+      const flingSwipe = async (touch) => {
+        await touch('touchStart', 900, y);
+        for (let k = 1; k <= 5; k++) { await touch('touchMove', 900 - 160 * k, y); await delay(16); }
+        await touch('touchEnd', 100, y);
+        await delay(FLING_WAIT);
+      };
+      const tabWidth = t0[1].left - t0[0].left;
+      const endShift = (WIDE.width - 8) - t0[9].right;
+      const labelX = (i, shift) => t0[i].left + shift + 100;
+      for (const style of ['held', 'fling']) {
+        for (const mode of MODES) {
+          const results = [];
+          for (let run = 1; run <= R7_RUNS; run++) {
+            const { context, page } = await open({ active: LONG[0], names: LONG, semantics: mode === 'on', continueAt: cal.continueAt, contextOptions: { hasTouch: true } });
+            try {
+              const cdp = await context.newCDPSession(page);
+              const touch = (type, x, yy) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x: Math.round(x), y: Math.round(yy) }] });
+              await (style === 'held' ? swipe400(touch) : flingSwipe(touch));
+              const swipe = await stored(page);
+              const pressed = style === 'held' ? 3 : 7;
+              const shift = style === 'held' ? swipeShift : endShift;
+              const seen = mode === 'on' ? Math.round((await tabs(page))[0].left - t0[0].left) : null;
+              const ax = labelX(pressed, shift);
+              const bx = ax - tabWidth;
+              await touch('touchStart', ax, y);
+              await delay(800);
+              if (SHOTS) await page.screenshot({ path: join(dirname(OUT), `r7-${style}-${mode}-${run}-a-pressed.png`), clip: { x: 0, y: 0, width: 1000, height: 60 } });
+              for (let k = 1; k <= 10; k++) { await touch('touchMove', ax + ((bx - ax) * k) / 10, y); await delay(30); }
+              if (SHOTS) await page.screenshot({ path: join(dirname(OUT), `r7-${style}-${mode}-${run}-b-dragging.png`), clip: { x: 0, y: 0, width: 1000, height: 60 } });
+              await touch('touchEnd', bx, y);
+              await delay(1500);
+              const s = await stored(page);
+              // Exactly one tab moved one place left, and it is active.
+              const ok = same(swipe.names, LONG) && swipe.active === LONG[0] && same(s.names, moved(LONG, pressed, pressed - 1)) && s.active === LONG[pressed];
+              let movedIndex = -1;
+              for (let i = 1; i < LONG.length; i++) if (same(s.names, moved(LONG, i, i - 1))) movedIndex = i;
+              const t = await layoutAfter(page);
+              results.push({ run, ok: Boolean(ok), pressed, expectedShift: Math.round(shift), shiftSeenWithSemantics: seen, afterSwipe: { orderUnchanged: same(swipe.names, LONG), active: swipe.active }, movedIndex, storedActive: s.active, finalOrderShown: t.map((x) => x.label.slice(0, 2)).join(',') });
+              console.log(`      r7 ${style} ${mode} run ${run}: ${ok ? 'applied' : 'NOT applied'} moved=${movedIndex} active=${s.active?.slice(0, 2)}`);
+            } finally {
+              await context.close();
+            }
+          }
+          const applied = results.filter((r) => r.ok).length;
+          check(rec, `RO-7b ${style} swipe, semantics ${mode}: the swipe scrolls without reordering, then a long-press drag applies (${applied}/${results.length})`, applied === results.length, { style, mode, applied, runs: results.length, results });
+        }
+      }
+    });
+  }
+  // --- Drag rows on a short strip: RO-1..RO-5, RO-7, RO-13, RO-14 ----------
+  //
+  // Three documents, D-2 order, decision.md active. Positions come from one
+  // semantics-on calibration (layout does not depend on the mode). Each
+  // sub-case is a fresh context; semantics OFF is primary, ON is recorded.
+  // The oracle is the stored order and active document.
+  const CLOSE_RECTS = () => [...document.querySelectorAll('flt-semantics[role=button]')]
+    .filter((n) => /^Close /.test((n.textContent || '').trim()))
+    .map((n) => { const r = n.getBoundingClientRect(); return { name: (n.textContent || '').trim().split('\n')[0].slice(6), x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
+
+  async function calibrateShort() {
+    const context = await browser.newContext({ viewport: WIDE });
+    try {
+      const page = await context.newPage();
+      await page.goto(`${server.origin}/__seed-page-not-the-app`);
+      await page.evaluate(SEED, seedValues('decision.md'));
+      await page.goto(`${server.origin}/`);
+      await page.waitForSelector('flt-semantics-placeholder', { state: 'attached', timeout: 90000 });
+      await delay(1500);
+      await page.evaluate(() => document.querySelector('flt-semantics-placeholder')?.click());
+      await delay(1200);
+      const button = page.getByRole('button', { name: /Continue reading/ }).first();
+      const box = await button.boundingBox();
+      await button.click({ force: true });
+      await delay(1800);
+      return { continueAt: { x: box.x + box.width / 2, y: box.y + box.height / 2 }, tabs: await tabs(page), closes: await page.evaluate(CLOSE_RECTS) };
+    } finally {
+      await context.close();
+    }
+  }
+
+  async function mouseDrag(page, from, to, { steps = 12 } = {}) {
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    for (let k = 1; k <= steps; k++) { await page.mouse.move(from.x + ((to.x - from.x) * k) / steps, from.y + ((to.y - from.y) * k) / steps); await delay(30); }
+    await page.mouse.up();
+    await delay(1500);
+  }
+
+  /// Touch input: the DevTools protocol in Chromium; elsewhere, synthetic
+  /// PointerEvents of type `touch` sent to the element under the point
+  /// (Flutter's web engine reads pointer events). Both are simulated input.
+  async function touchDriver(page, context) {
+    if (BROWSER === 'chrome' || BROWSER === 'edge') {
+      const cdp = await context.newCDPSession(page);
+      return {
+        kind: 'cdp',
+        send: (type, x, y) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: type === 'touchEnd' ? [] : [{ x: Math.round(x), y: Math.round(y) }] }),
+      };
+    }
+    await page.evaluate(() => { window.__touchTarget = null; });
+    return {
+      kind: 'synthetic-pointer',
+      send: (type, x, y) => page.evaluate(([t, px, py]) => {
+        const name = { touchStart: 'pointerdown', touchMove: 'pointermove', touchEnd: 'pointerup' }[t];
+        if (t === 'touchStart') window.__touchTarget = document.elementFromPoint(px, py);
+        const target = window.__touchTarget ?? document.elementFromPoint(px, py);
+        target.dispatchEvent(new PointerEvent(name, {
+          pointerId: 7, pointerType: 'touch', isPrimary: true, bubbles: true, cancelable: true, composed: true,
+          clientX: px, clientY: py, screenX: px, screenY: py, buttons: t === 'touchEnd' ? 0 : 1, button: 0, pressure: t === 'touchEnd' ? 0 : 0.5, width: 10, height: 10,
+        }));
+        if (t === 'touchEnd') window.__touchTarget = null;
+      }, [type, x, y]),
+    };
+  }
+
+  if (CASES.includes('drag')) {
+    await runCase('drag (RO-1..RO-5, RO-7, RO-13, RO-14 on a short strip)', async (rec) => {
+      const cal = await calibrateShort();
+      const at = Object.fromEntries(cal.tabs.map((t) => [t.label, t]));
+      const close = Object.fromEntries(cal.closes.map((c) => [c.name, c]));
+      // Where each tab and its close control are for a given order (tabs sit
+      // side by side from the first tab's left edge, each keeping its width).
+      const layout = (order) => {
+        let x = cal.tabs[0].left;
+        const out = {};
+        for (const name of order) {
+          const t = at[name];
+          out[name] = { x: x + t.w / 2, y: t.y, closeX: x + (close[name].x - t.left) };
+          x += t.w;
+        }
+        return out;
+      };
+      note(rec, 'calibration', { continueAt: cal.continueAt, tabs: cal.tabs.map((t) => `${t.label}@${Math.round(t.x)}`), closes: cal.closes.map((c) => `${c.name}@${Math.round(c.x)}`) });
+      for (const mode of MODES) {
+        const sem = mode === 'on';
+        const label = (s) => `${s} [semantics ${mode}]`;
+        const run = async (body, contextOptions = {}) => {
+          const { context, page } = await open({ active: 'decision.md', semantics: sem, continueAt: cal.continueAt, contextOptions });
+          try { return await body(page, context); } finally { await context.close(); }
+        };
+        // RO-1 and RO-13: plan.md onto decision.md, then close the active tab.
+        await run(async (page, context) => {
+          await mouseDrag(page, at['plan.md'], at['decision.md']);
+          const s = await stored(page);
+          check(rec, label('RO-1 mouse-drag plan.md onto decision.md: plan | decision | implementation, plan.md active (D-004), stored'),
+            same(s.names, ['plan.md', 'decision.md', 'implementation.md']) && s.active === 'plan.md', s);
+          if (sem) {
+            const t = await tabs(page);
+            check(rec, label('RO-1 one tablist owns every tab after the drop'), t.length === 3 && t.every((x) => x.owner === 'tablist' && x.sameList && x.tablists === 1));
+          }
+          // plan.md (active, first) is closed: its right neighbour decision.md becomes active (D-11).
+          const s4 = await stored(page);
+          const first = layout(['plan.md', 'decision.md', 'implementation.md'])['plan.md'];
+          await page.mouse.click(first.closeX, first.y);
+          await delay(1500);
+          const s2 = await stored(page);
+          check(rec, label('RO-13 closing the active first tab after a reorder activates its right neighbour in the new order (D-11)'),
+            s4.active === 'plan.md' && !s2.names.includes('plan.md') && s2.names[0] === 'decision.md' && s2.active === 'decision.md', { before: s4, after: s2 });
+        });
+        // RO-14: after a manual move, a file dropped on the Reader is appended after it.
+        if (FILES && (BROWSER === 'chrome' || BROWSER === 'edge')) {
+          await run(async (page, context) => {
+            await mouseDrag(page, at['plan.md'], at['decision.md']);
+            await mkdir(FILES, { recursive: true });
+            const file = join(FILES, 'appendix.md');
+            await writeFile(file, '# Appendix\n\nDropped on the Reader after a manual move.\n');
+            const cdp = await context.newCDPSession(page);
+            for (const type of ['dragEnter', 'dragOver', 'drop']) await cdp.send('Input.dispatchDragEvent', { type, x: 333, y: 450, data: { items: [], files: [file], dragOperationsMask: 1 } });
+            await delay(2500);
+            const s3 = await stored(page);
+            check(rec, label('RO-14 a Reader drop after the manual move appends after it and becomes active'),
+              same(s3.names, ['plan.md', 'decision.md', 'implementation.md', 'appendix.md']) && s3.active === 'appendix.md', s3);
+          });
+        }
+        // RO-2: decision.md rightwards onto plan.md.
+        await run(async (page) => {
+          await mouseDrag(page, at['decision.md'], at['plan.md']);
+          const s = await stored(page);
+          check(rec, label('RO-2 mouse-drag rightwards takes the target place; dragged tab active'),
+            same(s.names, ['implementation.md', 'plan.md', 'decision.md']) && s.active === 'decision.md', s);
+        });
+        // RO-3 and RO-4: a click selects; a drop on its own place only activates.
+        await run(async (page) => {
+          const before = await page.evaluate(STORED);
+          await page.mouse.click(at['implementation.md'].x, at['implementation.md'].y);
+          await delay(1200);
+          const s = await stored(page);
+          check(rec, label('RO-3 a click selects without reordering'), same(s.names, NAMES) && s.active === 'implementation.md', s);
+          const p = at['plan.md'];
+          await mouseDrag(page, p, { x: p.x + 24, y: p.y });
+          const after = await page.evaluate(STORED);
+          const s2 = decode(after);
+          check(rec, label('RO-4 a drop on its own place activates it; the stored set is byte-identical'),
+            s2.active === 'plan.md' && after.document === before.document, { s2 });
+        });
+        // RO-5: released off the strip.
+        await run(async (page) => {
+          const before = await page.evaluate(STORED);
+          await mouseDrag(page, at['plan.md'], { x: 300, y: 400 });
+          const after = await page.evaluate(STORED);
+          check(rec, label('RO-5 a drag released off the strip changes nothing (stored set and active)'),
+            after.document === before.document && decode(after).active === 'decision.md', decode(after));
+        });
+        // RO-6 / RO-7: a quick touch drag does not reorder; a long press then
+        // drag (no prior swipe) does. Repeated in fresh contexts: with
+        // semantics ON a long-press drag was found to fail intermittently
+        // (risk R-7, routed to the Human); that mode is measured, not gated.
+        const ro7 = [];
+        for (let trial = 1; trial <= RO7_TRIALS; trial++) {
+          await run(async (page, context) => {
+            const touch = await touchDriver(page, context);
+            const p = at['plan.md'];
+            const d = at['decision.md'];
+            await touch.send('touchStart', p.x, p.y);
+            for (let k = 1; k <= 8; k++) { await touch.send('touchMove', p.x + ((d.x - p.x) * k) / 8, p.y); await delay(16); }
+            await touch.send('touchEnd', d.x, p.y);
+            await delay(1200);
+            const s0 = await stored(page);
+            await touch.send('touchStart', p.x, p.y);
+            await delay(800);
+            for (let k = 1; k <= 10; k++) { await touch.send('touchMove', p.x + ((d.x - p.x) * k) / 10, p.y); await delay(30); }
+            await touch.send('touchEnd', d.x, p.y);
+            await delay(1500);
+            const s = await stored(page);
+            ro7.push({ trial, kind: touch.kind, quickDragKeptOrder: same(s0.names, NAMES), longPressApplied: same(s.names, ['plan.md', 'decision.md', 'implementation.md']) && s.active === 'plan.md', stored: s });
+          }, { hasTouch: true });
+        }
+        const kind = ro7[0]?.kind;
+        const quick = ro7.filter((r) => r.quickDragKeptOrder).length;
+        const applied = ro7.filter((r) => r.longPressApplied).length;
+        console.log(`      RO-6/RO-7 ${mode}: quick drag kept order ${quick}/${ro7.length}; long press applied ${applied}/${ro7.length}`);
+        check(rec, label(`RO-6 a quick touch drag does not reorder (${kind}) ${quick}/${ro7.length}`), quick === ro7.length, { ro7 });
+        if (sem) {
+          note(rec, label(`RO-7 touch long press then drag (${kind}): applied ${applied}/${ro7.length} - measured; R-7 semantics-on limitation routed to the Human`), { ro7 });
+        } else {
+          check(rec, label(`RO-7 touch long press then drag reorders; dragged tab active (${kind}) ${applied}/${ro7.length}`), applied === ro7.length, { ro7 });
+        }
       }
     });
   }

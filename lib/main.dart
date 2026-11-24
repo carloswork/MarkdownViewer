@@ -1367,6 +1367,10 @@ class _MarkdownViewerAppState extends State<MarkdownViewerApp> {
                         busy: _navigationInert,
                         onSelect: _activateDocument,
                         onClose: _closeDocument,
+                        // A dropped tab moves and becomes active (D-004).
+                        onReorder: (id, toIndex) => unawaited(
+                          _moveDocument(id, toIndex, activate: true),
+                        ),
                       )
                     else
                       const SizedBox.shrink(),

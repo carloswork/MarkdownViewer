@@ -20,11 +20,13 @@ keep the document. It is a reader, not an editor and not a Markdown IDE.
   included, nothing from that drop is added. Settings and open menus, sheets
   and dialogs ignore dropped files.
 - **Paste Markdown text** directly, for content that is not in a file.
-- **Arrange open documents.** With two or more documents open, *Move
-  document* in the reader menu moves the current one to first, or one place
-  left or right (up or down in the narrow *Documents* list). The document tabs
-  are reachable with Tab and Shift+Tab, and Enter or Space opens one. With
-  *Keep for next time* on, the order you choose is kept.
+- **Arrange open documents.** On wider screens, drag a document tab to
+  another tab's place (on a touch screen, press and hold the tab first; a
+  swipe still scrolls the tabs); the dragged document opens. With two or more
+  documents open, *Move document* in the reader menu moves the current one to
+  first, or one place left or right (up or down in the narrow *Documents*
+  list). The document tabs are reachable with Tab and Shift+Tab, and Enter or
+  Space opens one. With *Keep for next time* on, the order you choose is kept.
 - **Table-of-contents navigation.** Headings are extracted into a Contents
   sheet; tapping an entry jumps to that part of the document.
 - **Full-document search.** Search the rendered document from a persistent pane

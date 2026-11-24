@@ -1,5 +1,6 @@
-import 'dart:ui' show SemanticsRole;
+import 'dart:ui' show PointerDeviceKind, SemanticsRole;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import 'markdown_theme.dart';
@@ -33,6 +34,7 @@ class DocumentTabBar extends StatefulWidget {
     required this.busy,
     required this.onSelect,
     required this.onClose,
+    this.onReorder,
   });
 
   final List<MarkdownDocument> documents;
@@ -40,6 +42,10 @@ class DocumentTabBar extends StatefulWidget {
   final bool busy;
   final ValueChanged<String> onSelect;
   final ValueChanged<String> onClose;
+
+  /// A tab was dropped on the tab at [toIndex], possibly its own (DF-086):
+  /// the app moves [id] there and makes it active (D-004). Null: no drag.
+  final void Function(String id, int toIndex)? onReorder;
 
   @override
   State<DocumentTabBar> createState() => _DocumentTabBarState();
@@ -58,6 +64,27 @@ class _DocumentTabBarState extends State<DocumentTabBar> {
   /// active tab out of view without the active document or the count
   /// changing, so a width change reveals it too (S10-07).
   double? _lastWidth;
+
+  /// The document whose tab is being dragged, shown dimmed in place.
+  String? _draggingId;
+
+  /// Scrolls the strip while a dragged tab is held near either edge.
+  EdgeDraggingAutoScroller? _autoScroller;
+
+  /// Inside the strip's scroll view, for its viewport and its scrolling.
+  BuildContext? _scrollContext;
+
+  /// Where the dragging pointer is, in global coordinates.
+  Offset? _pointer;
+
+  /// The tab the dragged tab would land on, for the insertion mark.
+  int? _hoverIndex;
+
+  @override
+  void dispose() {
+    _autoScroller?.stopAutoScroll();
+    super.dispose();
+  }
 
   @override
   void initState() {
@@ -127,27 +154,249 @@ class _DocumentTabBarState extends State<DocumentTabBar> {
       padding: const EdgeInsets.symmetric(horizontal: 8),
       // The tab list sits inside the scroller so that its semantic
       // children are the tabs themselves.
-      child: Semantics(
-        role: SemanticsRole.tabBar,
-        container: true,
-        explicitChildNodes: true,
-        child: Row(
-          children: [
-            for (final document in widget.documents)
-              _DocumentTab(
-                key: _keyFor(document.id),
-                label: documentTabLabel(document),
-                active: document.id == widget.activeId,
-                busy: widget.busy,
-                palette: palette,
-                onSelect: () => widget.onSelect(document.id),
-                onClose: () => widget.onClose(document.id),
-              ),
-          ],
+      child: Builder(
+        builder: (scrollContext) {
+          _scrollContext = scrollContext;
+          return Semantics(
+            role: SemanticsRole.tabBar,
+            container: true,
+            explicitChildNodes: true,
+            child: Row(
+              children: [
+                for (final (index, document) in widget.documents.indexed)
+                  _draggableTab(index, document, palette),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  /// A tab that can be dragged onto another tab's place (DF-086).
+  ///
+  /// Mouse and trackpad start a drag after the usual slop, so a click still
+  /// selects; touch and stylus need a long press, so a swipe still scrolls
+  /// the strip. Tab drags are Flutter pointer drags, never HTML drag events,
+  /// so the file-drop adapter does not see them. While [DocumentTabBar.busy]
+  /// no drag starts and no drop applies (S10-08).
+  ///
+  /// The tab a drop lands on is worked out from where the pointer is over the
+  /// tabs as they are laid out now ([_tabAt]), not by hit-testing drop
+  /// targets: while the strip auto-scrolls, a scrolling view ignores the
+  /// pointer, so a drop held at the edge would otherwise land nowhere.
+  Widget _draggableTab(
+    int index,
+    MarkdownDocument document,
+    ReaderPalette palette,
+  ) {
+    final id = document.id;
+    final label = documentTabLabel(document);
+    final active = id == widget.activeId;
+    final busy = widget.busy;
+    final tab = Opacity(
+      opacity: _draggingId == id ? 0.4 : 1,
+      child: _DocumentTab(
+        key: _keyFor(id),
+        label: label,
+        active: active,
+        busy: busy,
+        palette: palette,
+        onSelect: () => widget.onSelect(id),
+        onClose: () => widget.onClose(id),
+      ),
+    );
+    if (widget.onReorder == null) return tab;
+
+    // What follows the pointer: a picture of the tab, outside the semantics
+    // and focus trees.
+    final feedback = ExcludeFocus(
+      child: ExcludeSemantics(
+        child: Material(
+          elevation: 3,
+          color: palette.surface,
+          borderRadius: BorderRadius.circular(8),
+          child: _DocumentTab(
+            label: label,
+            active: true,
+            busy: false,
+            palette: palette,
+            onSelect: () {},
+            onClose: () {},
+          ),
+        ),
+      ),
+    );
+    final drags = busy ? 0 : 1;
+    void started() => setState(() => _draggingId = id);
+
+    // The insertion mark: on the side the dragged tab will land.
+    final from = _draggingId == null || _hoverIndex != index
+        ? -1
+        : widget.documents.indexWhere((d) => d.id == _draggingId);
+    final mark = BorderSide(width: 2, color: palette.text);
+    return DecoratedBox(
+      position: DecorationPosition.foreground,
+      decoration: BoxDecoration(
+        border: Border(
+          left: from > index ? mark : BorderSide.none,
+          right: from >= 0 && from < index ? mark : BorderSide.none,
+        ),
+      ),
+      child: _MouseTabDraggable(
+        data: id,
+        maxSimultaneousDrags: drags,
+        feedback: feedback,
+        onDragStarted: started,
+        onDragUpdate: _dragMoved,
+        onDragEnd: (_) => _dropped(),
+        child: _TouchTabDraggable(
+          data: id,
+          maxSimultaneousDrags: drags,
+          feedback: feedback,
+          onDragStarted: started,
+          onDragUpdate: _dragMoved,
+          onDragEnd: (_) => _dropped(),
+          child: tab,
         ),
       ),
     );
   }
+
+  void _dragMoved(DragUpdateDetails details) {
+    _pointer = details.globalPosition;
+    _updateHover();
+    final scrollable = _scrollContext == null
+        ? null
+        : Scrollable.maybeOf(_scrollContext!);
+    if (scrollable == null) return;
+    _autoScroller ??= EdgeDraggingAutoScroller(
+      scrollable,
+      velocityScalar: 20,
+      onScrollViewScrolled: _autoScrolled,
+    );
+    _autoScroller!.startAutoScrollIfNecessary(_pointerRect(_pointer!));
+  }
+
+  Rect _pointerRect(Offset pointer) =>
+      Rect.fromCenter(center: pointer, width: 40, height: 40);
+
+  /// After each auto-scroll step: the tabs have moved under a pointer that
+  /// may be held still, so the landing tab is worked out again, and the
+  /// scroller is re-armed from the pointer's place relative to the new scroll
+  /// offset. Otherwise a still pointer at the edge scrolls only one step.
+  void _autoScrolled() {
+    _updateHover();
+    final pointer = _pointer;
+    if (pointer != null) {
+      _autoScroller?.startAutoScrollIfNecessary(_pointerRect(pointer));
+    }
+  }
+
+  void _updateHover() {
+    final pointer = _pointer;
+    final hover = pointer == null ? null : _tabAt(pointer);
+    if (mounted && hover != _hoverIndex) setState(() => _hoverIndex = hover);
+  }
+
+  /// A drag ended: the dragged tab takes the place of the tab under the
+  /// pointer (its own place: it is only activated), or nothing happens when
+  /// it was released off the strip.
+  void _dropped() {
+    final id = _draggingId;
+    final pointer = _pointer;
+    final target = pointer == null ? null : _tabAt(pointer);
+    _endDrag();
+    if (id == null || target == null || widget.busy) return;
+    widget.onReorder?.call(id, target);
+  }
+
+  /// The index of the tab at [global], as the strip is laid out now.
+  ///
+  /// Only a point inside the visible strip counts (with a little vertical
+  /// tolerance, since a horizontal drag drifts). Between the first or last tab
+  /// and the strip's edge, the nearest end tab counts.
+  int? _tabAt(Offset global) {
+    final context = _scrollContext;
+    final view = context == null
+        ? null
+        : Scrollable.maybeOf(context)?.context.findRenderObject();
+    if (view is! RenderBox || !view.hasSize) return null;
+    final strip = view.localToGlobal(Offset.zero) & view.size;
+    if (!strip.inflate(16).contains(global) ||
+        global.dx < strip.left ||
+        global.dx >= strip.right) {
+      return null;
+    }
+    final documents = widget.documents;
+    for (var i = 0; i < documents.length; i++) {
+      final box = _tabKeys[documents[i].id]?.currentContext?.findRenderObject();
+      if (box is! RenderBox || !box.hasSize) continue;
+      final left = box.localToGlobal(Offset.zero).dx;
+      if (i == 0 && global.dx < left) return 0;
+      if (global.dx < left + box.size.width) return i;
+    }
+    return documents.isEmpty ? null : documents.length - 1;
+  }
+
+  void _endDrag() {
+    _autoScroller?.stopAutoScroll();
+    _autoScroller = null;
+    _pointer = null;
+    if (mounted && (_draggingId != null || _hoverIndex != null)) {
+      setState(() {
+        _draggingId = null;
+        _hoverIndex = null;
+      });
+    }
+  }
+}
+
+/// Mouse and trackpad: a horizontal drag that starts after the usual slop.
+class _MouseTabDraggable extends Draggable<String> {
+  const _MouseTabDraggable({
+    required super.child,
+    required super.feedback,
+    super.data,
+    super.maxSimultaneousDrags,
+    super.onDragStarted,
+    super.onDragUpdate,
+    super.onDragEnd,
+  }) : super(axis: Axis.horizontal);
+
+  @override
+  MultiDragGestureRecognizer createRecognizer(
+    GestureMultiDragStartCallback onStart,
+  ) => HorizontalMultiDragGestureRecognizer(
+    supportedDevices: const {
+      PointerDeviceKind.mouse,
+      PointerDeviceKind.trackpad,
+    },
+  )..onStart = onStart;
+}
+
+/// Touch and stylus: a long press starts the drag, so a swipe still scrolls.
+class _TouchTabDraggable extends LongPressDraggable<String> {
+  const _TouchTabDraggable({
+    required super.child,
+    required super.feedback,
+    super.data,
+    super.maxSimultaneousDrags,
+    super.onDragStarted,
+    super.onDragUpdate,
+    super.onDragEnd,
+  }) : super(axis: Axis.horizontal, hapticFeedbackOnStart: false);
+
+  @override
+  DelayedMultiDragGestureRecognizer createRecognizer(
+    GestureMultiDragStartCallback onStart,
+  ) => DelayedMultiDragGestureRecognizer(
+    supportedDevices: const {
+      PointerDeviceKind.touch,
+      PointerDeviceKind.stylus,
+      PointerDeviceKind.invertedStylus,
+    },
+  )..onStart = onStart;
 }
 
 /// One tab: the tab itself, then its close control.

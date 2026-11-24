@@ -1,11 +1,12 @@
 // DF-086: manual document order. plan.md §4 rows verified here at the
-// Flutter level (CP1): the session move, RO-9..RO-12, RO-15 and the append
-// part of RO-14, KB-1..KB-4, KB-6, KB-7 and NS-1. Browser evidence for the
+// Flutter level: the session move, RO-9..RO-12, RO-15 and the append part of
+// RO-14, KB-1..KB-4, KB-6, KB-7 and NS-1 (CP1); the drag rows RO-1..RO-9 and
+// RO-13 (CP2). Browser evidence for the
 // keyboard rows is test/browser/df086_tabs.mjs; Flutter tests alone are not
 // evidence that browser keyboard access works (D-005).
 
 import 'dart:convert';
-import 'dart:ui' show SemanticsRole, Tristate;
+import 'dart:ui' show PointerDeviceKind, SemanticsRole, Tristate;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -49,7 +50,7 @@ Finder inTabs(Finder finder) =>
 /// The tab labels, left to right.
 List<String> tabOrder(WidgetTester tester) => [
   for (final text in tester.widgetList<Text>(inTabs(find.byType(Text))))
-    text.data!,
+    if (text.data != null) text.data!,
 ];
 
 String activeId(WidgetTester tester) =>
@@ -563,6 +564,250 @@ void main() {
       await tester.tap(find.byIcon(Icons.more_horiz_rounded));
       await settle(tester);
       expect(find.text('Return to main'), findsOneWidget);
+      semantics.dispose();
+    });
+
+    // --- CP2: drag (plan §3.3, §3.4; RO-1..RO-9, RO-13) ----------------------
+
+    Future<void> drag(
+      WidgetTester tester,
+      Offset from,
+      Offset to, {
+      PointerDeviceKind kind = PointerDeviceKind.mouse,
+      Duration longPress = Duration.zero,
+      Duration hold = Duration.zero,
+    }) async {
+      final gesture = await tester.startGesture(from, kind: kind);
+      await tester.pump();
+      if (longPress > Duration.zero) await tester.pump(longPress);
+      for (var i = 1; i <= 10; i++) {
+        await gesture.moveTo(Offset.lerp(from, to, i / 10)!);
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      for (
+        var t = Duration.zero;
+        t < hold;
+        t += const Duration(milliseconds: 50)
+      ) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      await gesture.up();
+      await settle(tester);
+      await settle(tester);
+    }
+
+    Offset tabCenter(WidgetTester tester, String label) =>
+        tester.getCenter(inTabs(find.text(label)));
+
+    testWidgets('RO-1: mouse-dragging C onto A gives C | A | B, C becomes '
+        'active (D-004), and both are stored', (tester) async {
+      useSize(tester, wide);
+      seedOn(['a', 'b', 'c'], active: 'a');
+      await launch(tester);
+      await continueReading(tester);
+      await drag(tester, tabCenter(tester, 'c.md'), tabCenter(tester, 'a.md'));
+      expect(tabOrder(tester), ['c.md', 'a.md', 'b.md']);
+      expect(activeId(tester), 'c');
+      expect(storedOrder(), ['c', 'a', 'b']);
+      expect(storedActive(), 'c');
+    });
+
+    testWidgets('RO-2: dragging rightwards takes the target place; the '
+        'dragged tab becomes active', (tester) async {
+      useSize(tester, wide);
+      seedOn(['a', 'b', 'c'], active: 'b');
+      await launch(tester);
+      await continueReading(tester);
+      await drag(tester, tabCenter(tester, 'a.md'), tabCenter(tester, 'c.md'));
+      expect(tabOrder(tester), ['b.md', 'c.md', 'a.md']);
+      expect(activeId(tester), 'a');
+      expect(storedOrder(), ['b', 'c', 'a']);
+    });
+
+    testWidgets('RO-3 / RO-4: a click selects without reordering; a drop on '
+        'its own place only activates, with no documents write', (
+      tester,
+    ) async {
+      useSize(tester, wide);
+      seedOn(['a', 'b', 'c'], active: 'a');
+      await launch(tester);
+      await continueReading(tester);
+      backend.writes.clear();
+      await tester.tap(inTabs(find.text('b.md')));
+      await settle(tester);
+      expect(activeId(tester), 'b');
+      expect(tabOrder(tester), ['a.md', 'b.md', 'c.md']);
+      expect(backend.writes, isNot(contains(Store.documentKey)));
+
+      final c = tabCenter(tester, 'c.md');
+      backend.writes.clear();
+      await drag(tester, c, c + const Offset(24, 0));
+      expect(activeId(tester), 'c');
+      expect(tabOrder(tester), ['a.md', 'b.md', 'c.md']);
+      expect(backend.writes, isNot(contains(Store.documentKey)));
+      expect(storedActive(), 'c');
+    });
+
+    testWidgets('RO-5: a drag released off the strip changes nothing', (
+      tester,
+    ) async {
+      useSize(tester, wide);
+      seedOn(['a', 'b', 'c'], active: 'a');
+      await launch(tester);
+      await continueReading(tester);
+      backend.writes.clear();
+      await drag(tester, tabCenter(tester, 'c.md'), const Offset(300, 400));
+      expect(tabOrder(tester), ['a.md', 'b.md', 'c.md']);
+      expect(activeId(tester), 'a');
+      expect(backend.writes, isNot(contains(Store.documentKey)));
+      expect(storedActive(), 'a');
+    });
+
+    testWidgets('RO-6 / RO-7: on touch a swipe scrolls the strip and moves '
+        'nothing; a long press then drag reorders and activates', (
+      tester,
+    ) async {
+      useSize(tester, wide);
+      final ids = [for (var i = 0; i < 10; i++) 'm$i-a-fairly-long-name'];
+      seedOn(ids, active: ids.first);
+      await launch(tester);
+      await continueReading(tester);
+      final scroll = tester
+          .state<ScrollableState>(
+            find.descendant(
+              of: find.byType(DocumentTabBar),
+              matching: find.byType(Scrollable),
+            ),
+          )
+          .position;
+      expect(scroll.pixels, 0);
+      final start = tabCenter(tester, '${ids[2]}.md');
+      await drag(
+        tester,
+        start,
+        start - const Offset(300, 0),
+        kind: PointerDeviceKind.touch,
+      );
+      expect(scroll.pixels, greaterThan(200), reason: 'the strip scrolled');
+      expect(tabOrder(tester), [for (final id in ids) '$id.md']);
+      expect(activeId(tester), ids.first);
+
+      await drag(
+        tester,
+        tabCenter(tester, '${ids[4]}.md'),
+        tabCenter(tester, '${ids[3]}.md'),
+        kind: PointerDeviceKind.touch,
+        longPress: const Duration(milliseconds: 600),
+      );
+      expect(
+        storedOrder(),
+        [...ids]
+          ..removeAt(4)
+          ..insert(3, ids[4]),
+      );
+      expect(activeId(tester), ids[4]);
+    });
+
+    testWidgets('RO-8: a mouse drag held at the strip edge auto-scrolls, and '
+        'the drop lands on the tab under the pointer, revealed and active', (
+      tester,
+    ) async {
+      useSize(tester, wide);
+      final ids = [for (var i = 0; i < 10; i++) 'm$i-a-fairly-long-name'];
+      seedOn(ids, active: ids.first);
+      await launch(tester);
+      await continueReading(tester);
+      final strip = tester.getRect(find.byType(DocumentTabBar));
+      final from = tabCenter(tester, '${ids.first}.md');
+      await drag(
+        tester,
+        from,
+        Offset(strip.right - 5, from.dy),
+        hold: const Duration(seconds: 15),
+      );
+      final order = storedOrder();
+      final to = order.indexOf(ids.first);
+      expect(to, ids.length - 1, reason: 'held until the strip end: $order');
+      expect(order, [...ids.skip(1), ids.first]);
+      expect(activeId(tester), ids.first);
+      final dropped = tester.getRect(inTabs(find.text('${ids.first}.md')));
+      expect(dropped.left, greaterThanOrEqualTo(strip.left));
+      expect(dropped.right, lessThanOrEqualTo(strip.right));
+    });
+
+    testWidgets('RO-9: while a close is being verified, no drag moves or '
+        'activates anything', (tester) async {
+      useSize(tester, wide);
+      seedOn(['a', 'b', 'c'], active: 'a');
+      await launch(tester);
+      await continueReading(tester);
+      final gate = backend.stall(Store.positionKey);
+      await tester.tap(find.byTooltip('Close b.md'));
+      await tester.pump();
+      final c = tabCenter(tester, 'c.md');
+      final a = tabCenter(tester, 'a.md');
+      final gesture = await tester.startGesture(
+        c,
+        kind: PointerDeviceKind.mouse,
+      );
+      for (var i = 1; i <= 10; i++) {
+        await gesture.moveTo(Offset.lerp(c, a, i / 10)!);
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      await gesture.up();
+      await tester.pump();
+      expect(tabOrder(tester), ['a.md', 'b.md', 'c.md']);
+      expect(activeId(tester), 'a');
+      gate.complete();
+      await settle(tester);
+      expect(tabOrder(tester), ['a.md', 'c.md']);
+      expect(activeId(tester), 'a');
+    });
+
+    testWidgets('RO-13: closing the active tab after a drag goes to its right '
+        'neighbour in the new order (D-11)', (tester) async {
+      useSize(tester, wide);
+      seedOn(['a', 'b', 'c'], active: 'a');
+      await launch(tester);
+      await continueReading(tester);
+      await drag(tester, tabCenter(tester, 'c.md'), tabCenter(tester, 'a.md'));
+      expect(tabOrder(tester), ['c.md', 'a.md', 'b.md']);
+      await tester.tap(find.byTooltip('Close c.md'));
+      await settle(tester);
+      expect(tabOrder(tester), ['a.md', 'b.md']);
+      expect(activeId(tester), 'a');
+    });
+
+    testWidgets('while dragging, the tab list still has exactly its tabs: '
+        'the drag image is not in the semantics tree', (tester) async {
+      final semantics = tester.ensureSemantics();
+      useSize(tester, wide);
+      seedOn(['a', 'b', 'c'], active: 'a');
+      await launch(tester);
+      await continueReading(tester);
+      final c = tabCenter(tester, 'c.md');
+      final gesture = await tester.startGesture(
+        c,
+        kind: PointerDeviceKind.mouse,
+      );
+      for (var i = 1; i <= 5; i++) {
+        await gesture.moveTo(c - Offset(20.0 * i, 0));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      final labels = <String>[];
+      void walk(SemanticsNode node) {
+        final data = node.getSemanticsData();
+        if (data.role == SemanticsRole.tab) labels.add(data.label);
+        node.visitChildren((child) {
+          walk(child);
+          return true;
+        });
+      }
+
+      walk(tester.getSemantics(find.byType(DocumentTabBar)));
+      expect(labels, ['a.md', 'b.md', 'c.md']);
+      await gesture.up();
+      await settle(tester);
       semantics.dispose();
     });
   });
